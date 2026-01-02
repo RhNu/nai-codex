@@ -310,6 +310,15 @@ export function parsePrompt(input: string): ParseResult {
         pos = snippetRef.end;
         continue;
       }
+      // 不是有效的 snippet 引用，把 '<' 当作普通字符处理
+      spans.push({
+        start: pos,
+        end: pos + 1,
+        weight: calculateWeight(),
+        type: 'text',
+      });
+      pos++;
+      continue;
     }
 
     // 普通文本 - 收集直到遇到特殊字符

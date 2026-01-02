@@ -109,6 +109,11 @@ export function useAutocomplete(options: UseAutocompleteOptions) {
     await searchAutocomplete(query, 'lexicon');
   }, debounceMs);
 
+  // 防抖搜索 snippet
+  const debouncedSnippetSearch = useDebounceFn(async (query: string) => {
+    await searchAutocomplete(query, 'snippet');
+  }, debounceMs);
+
   /**
    * 计算自动补全弹窗位置
    */
@@ -132,7 +137,7 @@ export function useAutocomplete(options: UseAutocompleteOptions) {
   /**
    * 检查是否需要触发自动补全
    */
-  async function checkAutocomplete(textarea: HTMLTextAreaElement) {
+  function checkAutocomplete(textarea: HTMLTextAreaElement) {
     if (!enabled.value) return;
 
     const cursorPos = textarea.selectionStart;
@@ -156,7 +161,7 @@ export function useAutocomplete(options: UseAutocompleteOptions) {
       const snippetQuery = currentWord.replace(/^<snippet:?/, '');
       autocompleteQuery.value = snippetQuery;
       autocompleteStart.value = start;
-      await searchAutocomplete(snippetQuery, 'snippet');
+      void debouncedSnippetSearch(snippetQuery);
       updateAutocompletePosition(textarea, start);
       return;
     }
@@ -166,7 +171,7 @@ export function useAutocomplete(options: UseAutocompleteOptions) {
       autocompleteMode.value = 'lexicon';
       autocompleteQuery.value = currentWord;
       autocompleteStart.value = start;
-      await debouncedLexiconSearch(currentWord);
+      void debouncedLexiconSearch(currentWord);
       updateAutocompletePosition(textarea, start);
       return;
     }

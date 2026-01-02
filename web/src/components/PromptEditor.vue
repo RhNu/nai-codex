@@ -90,7 +90,7 @@ watch(
   (val) => {
     if (val !== localValue.value) {
       localValue.value = val;
-      debouncedParse();
+      void debouncedParse();
     }
   },
 );
@@ -112,10 +112,10 @@ function onInput(e: Event) {
   const target = e.target as HTMLTextAreaElement;
   localValue.value = target.value;
   emit('update:modelValue', target.value);
-  debouncedParse();
+  void debouncedParse();
 
   // 处理自动补全
-  void checkAutocomplete(target);
+  checkAutocomplete(target);
 }
 
 // 键盘事件处理
