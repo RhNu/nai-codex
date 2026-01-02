@@ -20,7 +20,8 @@
  */
 import { ref, watch, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import { useDebounceFn } from '@vueuse/core';
-import { parsePrompt, formatPrompt, type HighlightSpan } from 'src/services/api';
+import { formatPrompt } from 'src/services/api';
+import { parsePrompt, type HighlightSpan } from 'src/utils/promptParser';
 import { useAutocomplete } from 'src/composables/useAutocomplete';
 
 const props = withDefaults(
@@ -89,74 +90,29 @@ watch(
   (val) => {
     if (val !== localValue.value) {
       localValue.value = val;
-      void debouncedParse();
+      debouncedParse();
     }
   },
 );
 
-// 构建 UTF-8 字节偏移到 JS 字符索引的映射表
-function buildByteToCharMap(text: string): number[] {
-  const encoder = new TextEncoder();
-  const bytes = encoder.encode(text);
-  const byteToChar: number[] = new Array(bytes.length + 1);
-
-  let byteIndex = 0;
-  for (let charIndex = 0; charIndex <= text.length; charIndex++) {
-    byteToChar[byteIndex] = charIndex;
-    if (charIndex < text.length) {
-      const char = text.charCodeAt(charIndex);
-      // 计算该字符的 UTF-8 字节数
-      if (char < 0x80) {
-        byteIndex += 1;
-      } else if (char < 0x800) {
-        byteIndex += 2;
-      } else if (char >= 0xd800 && char <= 0xdbff) {
-        // 代理对 (surrogate pair)，跳过
-        byteIndex += 4;
-        charIndex++; // 跳过低代理
-        byteToChar[byteIndex] = charIndex + 1;
-      } else {
-        byteIndex += 3;
-      }
-    }
-  }
-
-  // 填充任何未设置的索引
-  let lastValid = 0;
-  for (let i = 0; i <= bytes.length; i++) {
-    const val = byteToChar[i];
-    if (val !== undefined) {
-      lastValid = val;
-    } else {
-      byteToChar[i] = lastValid;
-    }
-  }
-
-  return byteToChar;
-}
-
-// 解析提示词获取高亮信息
-async function parseHighlight() {
+// 解析提示词获取高亮信息（纯前端本地解析）
+function parseHighlight() {
   if (!localValue.value) {
     spans.value = [];
     return;
   }
-  try {
-    const result = await parsePrompt(localValue.value);
-    spans.value = result.spans;
-  } catch (err) {
-    console.warn('Failed to parse prompt:', err);
-  }
+  const result = parsePrompt(localValue.value);
+  spans.value = result.spans;
 }
 
-const debouncedParse = useDebounceFn(parseHighlight, 300);
+const debouncedParse = useDebounceFn(parseHighlight, 100);
 
 // 输入处理
 function onInput(e: Event) {
   const target = e.target as HTMLTextAreaElement;
   localValue.value = target.value;
   emit('update:modelValue', target.value);
-  void debouncedParse();
+  debouncedParse();
 
   // 处理自动补全
   void checkAutocomplete(target);
@@ -240,32 +196,28 @@ const highlightHtml = computed(() => {
   }
 
   const text = localValue.value;
-  // 构建字节偏移到字符索引的映射
-  const byteToChar = buildByteToCharMap(text);
-
   let html = '';
-  let lastCharEnd = 0;
+  let lastEnd = 0;
 
   // 对 spans 按 start 排序
   const sortedSpans = [...spans.value].sort((a, b) => a.start - b.start);
 
   for (const span of sortedSpans) {
-    // 将字节偏移转换为字符索引
-    const charStart = byteToChar[span.start] ?? 0;
-    const charEnd = byteToChar[span.end] ?? text.length;
+    // 前端解析直接使用字符索引，无需转换
+    const { start, end } = span;
 
     // 跳过重叠的 span
-    if (charStart < lastCharEnd) {
+    if (start < lastEnd) {
       continue;
     }
 
     // 添加未覆盖的部分
-    if (charStart > lastCharEnd) {
-      const gapText = text.slice(lastCharEnd, charStart);
+    if (start > lastEnd) {
+      const gapText = text.slice(lastEnd, start);
       html += `<span style="color: inherit;">${escapeHtml(gapText)}</span>`;
     }
 
-    const spanText = text.slice(charStart, charEnd);
+    const spanText = text.slice(start, end);
     const style = getWeightStyle(span);
 
     if (style) {
@@ -274,12 +226,12 @@ const highlightHtml = computed(() => {
       html += `<span style="color: inherit;">${escapeHtml(spanText)}</span>`;
     }
 
-    lastCharEnd = charEnd;
+    lastEnd = end;
   }
 
   // 添加剩余部分
-  if (lastCharEnd < text.length) {
-    const remaining = text.slice(lastCharEnd);
+  if (lastEnd < text.length) {
+    const remaining = text.slice(lastEnd);
     html += `<span style="color: inherit;">${escapeHtml(remaining)}</span>`;
   }
 
@@ -305,7 +257,7 @@ async function doFormat() {
     localValue.value = formatted;
     emit('update:modelValue', formatted);
     emit('format');
-    await parseHighlight();
+    parseHighlight();
   } catch (err) {
     console.error('Format failed:', err);
   }
@@ -324,7 +276,7 @@ watch(localValue, () => {
 });
 
 onMounted(() => {
-  void parseHighlight();
+  parseHighlight();
   void nextTick(autoResize);
 });
 

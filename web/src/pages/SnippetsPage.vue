@@ -482,35 +482,23 @@ watch(page, () => {
 
         <q-card-section>
           <q-form class="q-gutter-sm">
-            <!-- 名称和分类在同一行 -->
-            <div class="row q-col-gutter-md">
-              <div class="col-12 col-sm-6">
-                <q-input
-                  v-model="form.name"
-                  label="名称 *"
-                  filled
-                  dense
-                  lazy-rules
-                  :rules="[
-                    (v) => !!v || '名称不能为空',
-                    (v) => !/[\s<>,]/.test(v) || '名称不能包含空格或特殊字符',
-                  ]"
-                >
-                  <template #hint>
-                    <span class="text-caption">用于 &lt;snippet:名称&gt; 引用</span>
-                  </template>
-                </q-input>
-              </div>
-              <div class="col-12 col-sm-6">
-                <q-input
-                  v-model="form.category"
-                  label="分类"
-                  filled
-                  dense
-                  hint="可选，用于分组显示"
-                />
-              </div>
-            </div>
+            <q-input
+              v-model="form.name"
+              label="名称 *"
+              filled
+              dense
+              lazy-rules
+              :rules="[
+                (v) => !!v || '名称不能为空',
+                (v) => !/[\s<>,]/.test(v) || '名称不能包含空格或特殊字符',
+              ]"
+            >
+              <template #hint>
+                <span class="text-caption">用于 &lt;snippet:名称&gt; 引用</span>
+              </template>
+            </q-input>
+
+            <q-input v-model="form.category" label="分类" filled dense hint="用于分组显示" />
 
             <!-- 标签 -->
             <q-input v-model="form.tags" label="标签" filled dense hint="多个标签用逗号分隔" />
