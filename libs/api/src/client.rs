@@ -45,7 +45,7 @@ impl NaiClient {
         })
     }
 
-    async fn post(&self, url: &str, payload: &Value) -> NaiResult<Vec<u8>> {
+    async fn post_raw(&self, url: &str, payload: &Value) -> NaiResult<Vec<u8>> {
         let resp = self
             .client
             .post(url)
@@ -68,13 +68,38 @@ impl NaiClient {
     }
 
     async fn post_generate_image(&self, payload: &Value) -> NaiResult<Vec<u8>> {
-        self.post("https://image.novelai.net/ai/generate-image", payload)
+        self.post_raw("https://image.novelai.net/ai/generate-image", payload)
             .await
     }
 
     async fn post_argument_image(&self, payload: &Value) -> NaiResult<Vec<u8>> {
-        self.post("https://image.novelai.net/ai/argument-image", payload)
+        self.post_raw("https://image.novelai.net/ai/argument-image", payload)
             .await
+    }
+
+    pub async fn inquire_quota(&self) -> NaiResult<u64> {
+        let resp = self
+            .client
+            .get("https://api.novelai.net/user/subscription")
+            .bearer_auth(&self.token)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.bytes().await?;
+            return Err(NaiError::BadStatus {
+                status: status.as_u16(),
+                body: String::from_utf8_lossy(&body).to_string(),
+            });
+        }
+
+        let json = resp.json::<Value>().await?;
+        let quota = json["trainingStepsLeft"]["fixedTrainingStepsLeft"]
+            .as_u64()
+            .ok_or(NaiError::General {
+                msg: "missing subscription quota".to_string(),
+            })?;
+        Ok(quota)
     }
 
     pub async fn generate_image(&self, req: &ImageGenerationRequest) -> NaiResult<Vec<u8>> {

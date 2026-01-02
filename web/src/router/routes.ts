@@ -5,7 +5,8 @@ const routes: RouteRecordRaw[] = [
     path: '/',
     component: () => import('layouts/MainLayout.vue'),
     children: [
-      { path: '', redirect: '/generate' },
+      { path: '', redirect: '/home' },
+      { path: 'home', component: () => import('pages/HomePage.vue') },
       { path: 'generate', component: () => import('pages/GeneratePage.vue') },
       { path: 'snippets', component: () => import('pages/SnippetsPage.vue') },
       { path: 'presets', component: () => import('pages/PresetsPage.vue') },

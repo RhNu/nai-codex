@@ -111,7 +111,7 @@ export default defineConfig((ctx) => {
     // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#framework
     framework: {
       config: {
-        notify: { position: 'top-right', timeout: 3000 },
+        notify: { position: 'top', timeout: 3000 },
       },
 
       // iconSet: 'material-icons', // Quasar icon set

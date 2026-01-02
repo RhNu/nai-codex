@@ -36,13 +36,14 @@ pub struct AppState {
     pub queue: TaskQueue,
     pub gallery_dir: PathBuf,
     pub lexicon: Option<Arc<Lexicon>>,
+    pub nai_client: Arc<NaiClient>,
 }
 
 pub async fn serve(cfg: ServerConfig) -> Result<()> {
     let storage = Arc::new(CoreStorage::open(&cfg.db_path, &cfg.preview_dir)?);
     let gallery = GalleryPaths::new(&cfg.gallery_dir);
     let client = Arc::new(NaiClient::new(cfg.nai_token)?);
-    let queue = TaskQueue::new(client, Arc::clone(&storage), gallery.clone());
+    let queue = TaskQueue::new(Arc::clone(&client), Arc::clone(&storage), gallery.clone());
 
     // 从嵌入数据加载词库
     let lexicon = match Lexicon::load_embedded() {
@@ -61,11 +62,13 @@ pub async fn serve(cfg: ServerConfig) -> Result<()> {
         queue,
         gallery_dir: cfg.gallery_dir.clone(),
         lexicon,
+        nai_client: client,
     };
 
     // API 路由都放在 /api 前缀下
     let api_router = Router::new()
         .route("/health", get(health))
+        .route("/quota", get(get_quota))
         .route("/tasks", post(create_task))
         .route("/tasks/{id}", get(get_task))
         .route("/records/recent", get(list_recent_records))
@@ -126,6 +129,18 @@ pub async fn serve(cfg: ServerConfig) -> Result<()> {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+#[derive(Debug, Serialize)]
+struct QuotaResponse {
+    anlas: u64,
+}
+
+async fn get_quota(State(state): State<AppState>) -> impl IntoResponse {
+    match state.nai_client.inquire_quota().await {
+        Ok(anlas) => (StatusCode::OK, Json(QuotaResponse { anlas })).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]

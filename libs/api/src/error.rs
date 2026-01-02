@@ -8,6 +8,8 @@ pub enum NaiError {
     BadStatus { status: u16, body: String },
     #[error("missing zip entry: {file_name}")]
     BadResult { file_name: String },
+    #[error("general error: {msg}")]
+    General { msg: String },
 }
 
 pub type NaiResult<T> = Result<T, NaiError>;

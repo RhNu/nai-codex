@@ -110,6 +110,17 @@ export async function checkHealth() {
   return data;
 }
 
+// ============== Quota ==============
+
+export type QuotaResponse = {
+  anlas: number;
+};
+
+export async function fetchQuota() {
+  const { data } = await api.get<QuotaResponse>('/quota');
+  return data;
+}
+
 // ============== Tasks ==============
 
 export async function submitTask(payload: TaskSubmitPayload) {
