@@ -6,14 +6,14 @@ COPY web/package.json web/pnpm-lock.yaml ./
 COPY web/ .
 RUN corepack enable && pnpm install --frozen-lockfile && pnpm run build
 
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.92-bookworm AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev build-essential && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY libs ./libs
 COPY src ./src
 COPY assets ./assets
-# 不需要COPY web/dist，因为下面会从web stage复制
+
 COPY --from=web /app/web/dist ./web/dist
 RUN cargo build --release
 
