@@ -344,17 +344,18 @@ defineExpose({
     </div>
     <!-- 工具栏 -->
     <div class="prompt-editor__toolbar">
-      <q-toggle
+      <q-checkbox
         v-if="showAutocompleteToggle"
         v-model="autocompleteEnabled"
         size="xs"
         dense
+        label="自动补全"
         icon="auto_awesome"
         color="secondary"
         class="q-mr-sm"
       >
         <q-tooltip>词库自动补全</q-tooltip>
-      </q-toggle>
+      </q-checkbox>
       <q-btn
         flat
         dense

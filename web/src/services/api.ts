@@ -30,6 +30,7 @@ export type GenerationParams = {
   add_quality_tags?: boolean;
   character_prompts?: CharacterPrompt[];
   seed?: number | null;
+  variety_plus?: boolean;
 };
 
 export type TaskSubmitPayload = {

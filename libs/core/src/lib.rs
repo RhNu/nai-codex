@@ -200,6 +200,8 @@ pub struct GenerationParams {
     pub character_prompts: Option<Vec<CharacterPrompt>>,
     /// Fixed seed for reproducibility. None or negative means random.
     pub seed: Option<i64>,
+    /// Variety+ mode for dynamic variation
+    pub variety_plus: bool,
 }
 
 impl Default for GenerationParams {
@@ -217,6 +219,7 @@ impl Default for GenerationParams {
             add_quality_tags: true,
             character_prompts: None,
             seed: None,
+            variety_plus: false,
         }
     }
 }
@@ -855,7 +858,7 @@ impl TaskExecutor {
         }
     }
 
-    pub async fn execute(&self, task: GenerateTaskRequest) -> CoreResult<GenerationRecord> {
+    pub async fn execute(&self, mut task: GenerateTaskRequest) -> CoreResult<GenerationRecord> {
         info!(task_id=%task.id, count=task.count, "task started");
 
         let storage_for_expand = Arc::clone(&self.storage);
@@ -865,12 +868,33 @@ impl TaskExecutor {
             task.raw_prompt.clone()
         };
 
-        let expanded_prompt = tokio::task::spawn_blocking(move || {
-            let resolver = SnippetResolver::new(storage_for_expand);
-            resolver.expand(&applied)
-        })
-        .await
-        .map_err(|e| anyhow!("join error: {e}"))??;
+        // 同时展开主提示词和角色提示词中的 snippet
+        let character_prompts = task.params.character_prompts.clone();
+        let (expanded_prompt, expanded_character_prompts) =
+            tokio::task::spawn_blocking(move || {
+                let resolver = SnippetResolver::new(storage_for_expand);
+                let main_prompt = resolver.expand(&applied)?;
+
+                // 展开角色提示词中的 snippet
+                let expanded_chars = if let Some(chars) = character_prompts {
+                    let mut result = Vec::with_capacity(chars.len());
+                    for mut char_prompt in chars {
+                        char_prompt.prompt = resolver.expand(&char_prompt.prompt)?;
+                        char_prompt.uc = resolver.expand(&char_prompt.uc)?;
+                        result.push(char_prompt);
+                    }
+                    Some(result)
+                } else {
+                    None
+                };
+
+                Ok::<_, anyhow::Error>((main_prompt, expanded_chars))
+            })
+            .await
+            .map_err(|e| anyhow!("join error: {e}"))??;
+
+        // 更新 task 中的 character_prompts 为展开后的版本
+        task.params.character_prompts = expanded_character_prompts;
 
         let mut images = Vec::with_capacity(task.count as usize);
 
@@ -944,7 +968,7 @@ fn to_nai_request(task: &GenerateTaskRequest, prompt: &str, seed: u64) -> ImageG
         add_quality_tags: task.params.add_quality_tags,
         undesired_content_preset: task.params.undesired_content_preset,
         legacy_uc: false,
-        variety_plus: false,
+        variety_plus: task.params.variety_plus,
     }
 }
 

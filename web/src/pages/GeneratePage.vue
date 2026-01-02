@@ -96,6 +96,7 @@ const noise = ref('karras');
 const model = ref('nai-diffusion-4-5-full');
 const addQualityTags = ref(true);
 const ucPreset = ref<number | null>(0);
+const varietyPlus = ref(false);
 
 // Snippet 搜索面板
 const showSnippetPanel = ref(false);
@@ -294,6 +295,7 @@ function collectCurrentSettings() {
     cfg_rescale: cfgRescale.value,
     add_quality_tags: addQualityTags.value,
     undesired_content_preset: ucPreset.value,
+    variety_plus: varietyPlus.value,
   };
 
   return {
@@ -339,6 +341,7 @@ function applySettings(settings: {
     cfgRescale.value = p.cfg_rescale || 0;
     addQualityTags.value = p.add_quality_tags !== false;
     ucPreset.value = p.undesired_content_preset ?? 0;
+    varietyPlus.value = p.variety_plus || false;
   }
 
   // 恢复角色提示词
@@ -378,6 +381,7 @@ watch(
     cfgRescale,
     addQualityTags,
     ucPreset,
+    varietyPlus,
     characterSlots,
   ],
   () => {
@@ -400,6 +404,7 @@ async function submit() {
       cfg_rescale: cfgRescale.value,
       add_quality_tags: addQualityTags.value,
       undesired_content_preset: ucPreset.value,
+      variety_plus: varietyPlus.value,
     };
 
     // 处理seed
@@ -644,6 +649,10 @@ onUnmounted(() => {
                   filled
                   dense
                 />
+              </div>
+              <div class="col-12 col-sm-6 col-md-3">
+                <q-toggle v-model="varietyPlus" label="Variety+" color="primary" dense />
+                <q-tooltip>启用 Variety+ 模式，增加生成结果的多样性</q-tooltip>
               </div>
             </div>
           </div>
