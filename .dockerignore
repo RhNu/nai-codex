@@ -1,69 +1,63 @@
 # Rust
-
-target/ \*_/_.rs.bk
-\*.pdb
-Cargo.lock
+target/
+**/*.rs.bk
+*.pdb
 
 # IDE
-
 .vscode/
 .idea/
-_.swp
-_.swo
-\*~
+*.swp
+*.swo
+*~
 
 # Git
-
 .git/
 .gitignore
 .gitattributes
 
 # Documentation
-
-\*.md
+*.md
 !README.md
 docs/
 
 # Docker
-
 Dockerfile
-docker-compose\*.yml
+docker-compose*.yml
 .dockerignore
 
 # Environment
-
 .env
-.env.\*
+.env.*
 !.env.example
 
 # OS
-
 .DS_Store
 Thumbs.db
 desktop.ini
 
 # Build artifacts
-
 dist/
 build/
 
 # Logs
-
-\*.log
+*.log
 logs/
 
 # Test
-
 tests/
-\*.test
+*.test
 
 # Node (already built in web stage)
-
 node_modules/
 web/node_modules/
 web/dist/
 
 # Local data
-
 data/
-\*.redb
+*.redb
+
+# Dev directory
+.dev/
+
+# GitHub
+.github/
