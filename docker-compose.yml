@@ -1,15 +1,11 @@
-version: "3.8"
-
 services:
-  codex:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: codex-app
-    ports:
-      - "8080:8080"
+  nai-codex:
+    image: ghcr.io/rhnu/nai-codex:latest
+    container_name: nai-codex
+    expose:
+      - "8080"
     volumes:
-      - codex-data:/data
+      - ./data:/data
     environment:
       - CODEX_DB_PATH=/data/codex.redb
       - CODEX_PREVIEW_DIR=/data/previews
@@ -24,7 +20,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
-volumes:
-  codex-data:
-    driver: local

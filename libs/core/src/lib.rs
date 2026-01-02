@@ -45,7 +45,8 @@ pub struct Snippet {
     pub category: String,
     pub tags: Vec<String>,
     pub description: Option<String>,
-    pub preview_path: Option<PathBuf>,
+    /// 预览图文件名（存储在 preview_dir 中）
+    pub preview_path: Option<String>,
     pub content: String,
     pub created_at: chrono::DateTime<Utc>,
     pub updated_at: chrono::DateTime<Utc>,
@@ -74,6 +75,9 @@ pub struct CharacterPreset {
     pub id: Uuid,
     pub name: String,
     pub description: Option<String>,
+    /// 预览图路径
+    #[serde(default)]
+    pub preview_path: Option<String>,
     /// 正向提示词：添加到原提示词之前
     pub before: Option<String>,
     /// 正向提示词：添加到原提示词之后
@@ -100,6 +104,7 @@ impl CharacterPreset {
             id: Uuid::new_v4(),
             name,
             description: None,
+            preview_path: None,
             before: None,
             after: None,
             replace: None,
@@ -333,9 +338,10 @@ impl CoreStorage {
         snippet.updated_at = Utc::now();
 
         if let Some(bytes) = preview_bytes {
-            let preview_path = self.preview_dir.join(format!("{}.png", snippet.id));
+            let preview_filename = format!("{}.png", snippet.id);
+            let preview_path = self.preview_dir.join(&preview_filename);
             fs::write(&preview_path, bytes).context("write snippet preview")?;
-            snippet.preview_path = Some(preview_path.clone());
+            snippet.preview_path = Some(preview_filename);
         }
 
         // 获取旧的名称以便更新索引
@@ -442,6 +448,30 @@ impl CoreStorage {
         Ok(preset)
     }
 
+    /// 创建或更新 preset 并可选保存预览图
+    pub fn upsert_preset_with_preview(
+        &self,
+        mut preset: CharacterPreset,
+        preview_bytes: Option<&[u8]>,
+    ) -> CoreResult<CharacterPreset> {
+        if let Some(bytes) = preview_bytes {
+            let preview_filename = format!("preset_{}.png", preset.id);
+            let preview_path = self.preview_dir.join(&preview_filename);
+            fs::write(&preview_path, bytes).context("write preset preview")?;
+            preset.preview_path = Some(preview_filename);
+        }
+
+        let serialized = serde_json::to_string(&preset)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(TABLE_PRESETS)?;
+            table.insert(preset.id, serialized)?;
+        }
+        write_txn.commit()?;
+        info!(id=%preset.id, name=%preset.name, "preset upserted");
+        Ok(preset)
+    }
+
     /// 重命名 preset
     pub fn rename_preset(&self, id: Uuid, new_name: String) -> CoreResult<CharacterPreset> {
         let mut preset = self
@@ -474,16 +504,86 @@ impl CoreStorage {
     }
 
     pub fn delete_preset(&self, id: Uuid) -> CoreResult<bool> {
+        // First read the preset to get its preview path
+        let preview_path = {
+            let read_txn = self.db.begin_read()?;
+            let table = read_txn.open_table(TABLE_PRESETS)?;
+            if let Some(value) = table.get(id)? {
+                let preset: CharacterPreset = serde_json::from_str(&value.value())?;
+                preset.preview_path
+            } else {
+                return Ok(false);
+            }
+        };
+
         let write_txn = self.db.begin_write()?;
         let removed = {
             let mut table = write_txn.open_table(TABLE_PRESETS)?;
             table.remove(id)?.is_some()
         };
         write_txn.commit()?;
+
+        // Remove preview file if exists
+        if let Some(path) = preview_path {
+            let full_path = self.preview_dir.join(path);
+            let _ = fs::remove_file(full_path);
+        }
+
         if removed {
             info!(id=%id, "preset deleted");
         }
         Ok(removed)
+    }
+
+    /// 更新 preset 的预览图
+    pub fn update_preset_preview(
+        &self,
+        id: Uuid,
+        preview_bytes: &[u8],
+    ) -> CoreResult<CharacterPreset> {
+        let mut preset = self
+            .get_preset(id)?
+            .ok_or_else(|| anyhow!("preset not found"))?;
+
+        let preview_filename = format!("preset_{}.png", preset.id);
+        let preview_path = self.preview_dir.join(&preview_filename);
+        fs::write(&preview_path, preview_bytes).context("write preset preview")?;
+        preset.preview_path = Some(preview_filename);
+        preset.updated_at = Utc::now();
+
+        let serialized = serde_json::to_string(&preset)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(TABLE_PRESETS)?;
+            table.insert(preset.id, serialized)?;
+        }
+        write_txn.commit()?;
+        info!(id=%preset.id, "preset preview updated");
+        Ok(preset)
+    }
+
+    /// 删除 preset 的预览图
+    pub fn delete_preset_preview(&self, id: Uuid) -> CoreResult<CharacterPreset> {
+        let mut preset = self
+            .get_preset(id)?
+            .ok_or_else(|| anyhow!("preset not found"))?;
+
+        if let Some(path) = &preset.preview_path {
+            let full_path = self.preview_dir.join(path);
+            let _ = fs::remove_file(full_path);
+        }
+        preset.preview_path = None;
+        preset.updated_at = Utc::now();
+
+        let serialized = serde_json::to_string(&preset)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(TABLE_PRESETS)?;
+            table.insert(preset.id, serialized)?;
+        }
+        write_txn.commit()?;
+        info!(id=%preset.id, "preset preview deleted");
+        Ok(preset)
     }
 
     pub fn get_snippet(&self, id: Uuid) -> CoreResult<Option<Snippet>> {
@@ -525,7 +625,8 @@ impl CoreStorage {
 
         // Remove preview file if exists
         if let Some(path) = preview_path {
-            let _ = fs::remove_file(path);
+            let full_path = self.preview_dir.join(path);
+            let _ = fs::remove_file(full_path);
         }
 
         info!(id=%id, "snippet deleted");
@@ -538,9 +639,10 @@ impl CoreStorage {
             .get_snippet(id)?
             .ok_or_else(|| anyhow!("snippet not found"))?;
 
-        let preview_path = self.preview_dir.join(format!("{}.png", snippet.id));
+        let preview_filename = format!("{}.png", snippet.id);
+        let preview_path = self.preview_dir.join(&preview_filename);
         fs::write(&preview_path, preview_bytes).context("write snippet preview")?;
-        snippet.preview_path = Some(preview_path.clone());
+        snippet.preview_path = Some(preview_filename);
         snippet.updated_at = Utc::now();
 
         let serialized = serde_json::to_string(&snippet)?;
@@ -561,7 +663,8 @@ impl CoreStorage {
             .ok_or_else(|| anyhow!("snippet not found"))?;
 
         if let Some(path) = &snippet.preview_path {
-            let _ = fs::remove_file(path);
+            let full_path = self.preview_dir.join(path);
+            let _ = fs::remove_file(full_path);
         }
         snippet.preview_path = None;
         snippet.updated_at = Utc::now();

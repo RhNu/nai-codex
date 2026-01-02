@@ -7,9 +7,12 @@ import {
   fetchPreset,
   updatePreset,
   deletePreset,
+  deletePresetPreview,
   type PresetSummary,
+  apiBase,
 } from 'src/services/api';
 import PromptEditor from 'src/components/PromptEditor.vue';
+import { useImageUpload } from 'src/composables';
 
 const { notify, dialog } = useQuasar();
 
@@ -32,13 +35,38 @@ const form = ref({
   uc_before: '',
   uc_after: '',
   uc_replace: '',
+  existingPreviewPath: null as string | null,
 });
 const saving = ref(false);
 
+// 图片上传
+const {
+  previewUrl,
+  base64Data,
+  hasImage,
+  loading: imageLoading,
+  error: imageError,
+  selectFile,
+  handleFileChange,
+  handleDrop,
+  clearImage,
+  reset: resetImage,
+  fileInputRef,
+} = useImageUpload();
+
 // 整体页面锁定状态（任何异步操作期间）
 const isLocked = computed(
-  () => loading.value || saving.value || deleting.value || editLoading.value,
+  () => loading.value || saving.value || deleting.value || editLoading.value || imageLoading.value,
 );
+
+// 当前预览图 URL（可能是新上传的或已存在的）
+const currentPreviewUrl = computed(() => {
+  if (previewUrl.value) return previewUrl.value;
+  if (form.value.existingPreviewPath) {
+    return `${apiBase}/previews/${form.value.existingPreviewPath}`;
+  }
+  return null;
+});
 
 const dialogTitle = computed(() => (editingId.value ? '编辑预设' : '新建预设'));
 
@@ -67,7 +95,9 @@ function openCreate() {
     uc_before: '',
     uc_after: '',
     uc_replace: '',
+    existingPreviewPath: null,
   };
+  resetImage();
   openDialog.value = true;
 }
 
@@ -85,7 +115,9 @@ async function openEdit(id: string) {
       uc_before: preset.uc_before || '',
       uc_after: preset.uc_after || '',
       uc_replace: preset.uc_replace || '',
+      existingPreviewPath: preset.preview_path || null,
     };
+    resetImage();
     openDialog.value = true;
   } catch (err) {
     console.error(err);
@@ -112,6 +144,7 @@ async function save() {
       uc_before?: string;
       uc_after?: string;
       uc_replace?: string;
+      preview_base64?: string;
     } = {
       name: form.value.name,
     };
@@ -122,6 +155,7 @@ async function save() {
     if (form.value.uc_before) payload.uc_before = form.value.uc_before;
     if (form.value.uc_after) payload.uc_after = form.value.uc_after;
     if (form.value.uc_replace) payload.uc_replace = form.value.uc_replace;
+    if (base64Data.value) payload.preview_base64 = base64Data.value;
 
     if (editingId.value) {
       await updatePreset(editingId.value, payload);
@@ -137,6 +171,24 @@ async function save() {
     notify({ type: 'negative', message: '保存失败' });
   } finally {
     saving.value = false;
+  }
+}
+
+async function removePreview() {
+  if (!editingId.value) {
+    clearImage();
+    form.value.existingPreviewPath = null;
+    return;
+  }
+
+  try {
+    await deletePresetPreview(editingId.value);
+    form.value.existingPreviewPath = null;
+    clearImage();
+    notify({ type: 'positive', message: '预览图已删除' });
+  } catch (err) {
+    console.error(err);
+    notify({ type: 'negative', message: '删除预览图失败' });
   }
 }
 
@@ -203,6 +255,21 @@ watch(page, () => {
       <!-- 预设列表 - 卡片网格 -->
       <div v-else class="preset-grid q-pa-md">
         <q-card v-for="p in presets" :key="p.id" class="preset-card" flat bordered>
+          <!-- 预览图 -->
+          <q-img
+            v-if="p.preview_path"
+            :src="`${apiBase}/previews/${p.preview_path}`"
+            :ratio="16 / 9"
+            fit="cover"
+            class="preset-preview"
+          >
+            <template v-slot:loading>
+              <div class="flex flex-center full-height">
+                <q-spinner-gears color="primary" size="1.5rem" />
+              </div>
+            </template>
+          </q-img>
+
           <q-card-section>
             <div class="row items-center no-wrap">
               <q-icon name="person" color="primary" size="sm" class="q-mr-sm" />
@@ -294,6 +361,46 @@ watch(page, () => {
             :input-style="{ minHeight: '60px' }"
           />
 
+          <!-- 预览图 -->
+          <div class="preview-upload-section">
+            <div class="text-caption text-grey-7 q-mb-sm">预览图（可选）</div>
+            <input
+              ref="fileInputRef"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              style="display: none"
+              @change="handleFileChange"
+            />
+
+            <div
+              v-if="!currentPreviewUrl"
+              class="upload-area"
+              @click="selectFile"
+              @drop.prevent="handleDrop"
+              @dragover.prevent
+            >
+              <q-icon name="add_photo_alternate" size="2rem" color="grey-5" />
+              <div class="text-caption text-grey-6 q-mt-sm">点击或拖拽上传预览图</div>
+              <div class="text-caption text-grey-5">支持 PNG/JPEG/WebP，最大 5MB</div>
+            </div>
+
+            <div v-else class="preview-container">
+              <q-img :src="currentPreviewUrl" fit="contain" class="preview-image" />
+              <div class="preview-actions">
+                <q-btn round flat dense icon="edit" @click="selectFile">
+                  <q-tooltip>更换图片</q-tooltip>
+                </q-btn>
+                <q-btn round flat dense icon="delete" color="negative" @click="removePreview">
+                  <q-tooltip>删除图片</q-tooltip>
+                </q-btn>
+              </div>
+            </div>
+
+            <div v-if="imageError" class="text-negative text-caption q-mt-xs">
+              {{ imageError }}
+            </div>
+          </div>
+
           <q-separator />
 
           <div class="text-subtitle2 text-grey-7">正向提示词修改规则</div>
@@ -377,11 +484,60 @@ watch(page, () => {
   }
 }
 
+.preset-preview {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
 .ellipsis-2-lines {
   display: -webkit-box;
   line-clamp: 2;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+// 预览图上传样式
+.preview-upload-section {
+  margin-top: 8px;
+}
+
+.upload-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  border: 2px dashed rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+
+  &:hover {
+    border-color: var(--q-primary);
+    background: rgba(25, 118, 210, 0.04);
+  }
+}
+
+.preview-container {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+
+  .preview-image {
+    max-height: 200px;
+    width: 100%;
+  }
+
+  .preview-actions {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    gap: 4px;
+    background: rgba(255, 255, 255, 0.9);
+    border-radius: 4px;
+    padding: 2px;
+  }
 }
 </style>

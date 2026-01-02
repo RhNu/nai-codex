@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const apiBase = import.meta.env.VITE_API_BASE || '/api';
+export const apiBase = import.meta.env.VITE_API_BASE || '/api';
 export const api = axios.create({ baseURL: apiBase });
 
 // ============== Types ==============
@@ -74,12 +74,14 @@ export type SnippetSummary = {
   category: string;
   tags: string[];
   description?: string | null;
+  preview_path?: string | null;
 };
 
 export type Preset = {
   id: string;
   name: string;
   description?: string | null;
+  preview_path?: string | null;
   before?: string | null;
   after?: string | null;
   replace?: string | null;
@@ -94,6 +96,7 @@ export type PresetSummary = {
   id: string;
   name: string;
   description?: string | null;
+  preview_path?: string | null;
 };
 
 // ============== Health ==============
@@ -151,6 +154,33 @@ export async function createSnippet(payload: {
   return data;
 }
 
+export async function updateSnippet(
+  id: string,
+  payload: {
+    name?: string;
+    category?: string;
+    content?: string;
+    description?: string;
+    tags?: string[];
+    preview_base64?: string;
+  },
+) {
+  const { data } = await api.put<Snippet>(`/snippets/${id}`, payload);
+  return data;
+}
+
+export async function updateSnippetPreview(id: string, previewBase64: string) {
+  const { data } = await api.put<Snippet>(`/snippets/${id}/preview`, {
+    preview_base64: previewBase64,
+  });
+  return data;
+}
+
+export async function deleteSnippetPreview(id: string) {
+  const { data } = await api.delete<Snippet>(`/snippets/${id}/preview`);
+  return data;
+}
+
 export async function deleteSnippet(id: string) {
   await api.delete(`/snippets/${id}`);
 }
@@ -176,6 +206,7 @@ export async function createPreset(payload: {
   uc_before?: string;
   uc_after?: string;
   uc_replace?: string;
+  preview_base64?: string;
 }) {
   const { data } = await api.post<Preset>('/presets', payload);
   return data;
@@ -192,9 +223,22 @@ export async function updatePreset(
     uc_before?: string;
     uc_after?: string;
     uc_replace?: string;
+    preview_base64?: string;
   },
 ) {
   const { data } = await api.put<Preset>(`/presets/${id}`, payload);
+  return data;
+}
+
+export async function updatePresetPreview(id: string, previewBase64: string) {
+  const { data } = await api.put<Preset>(`/presets/${id}/preview`, {
+    preview_base64: previewBase64,
+  });
+  return data;
+}
+
+export async function deletePresetPreview(id: string) {
+  const { data } = await api.delete<Preset>(`/presets/${id}/preview`);
   return data;
 }
 

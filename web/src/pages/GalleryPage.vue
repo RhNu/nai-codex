@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useQuasar } from 'quasar';
 import { useClipboard } from '@vueuse/core';
 import { fetchRecentRecords, type GenerationRecord } from 'src/services/api';
+import { useGalleryNavigation, useImageTools } from 'src/composables';
 
 type GalleryItem = {
   id: string;
@@ -17,6 +18,7 @@ type GalleryItem = {
 
 const $q = useQuasar();
 const { copy } = useClipboard();
+const { fetchImageAsBlob, removeMetadata, downloadBlob, copyImageToClipboard } = useImageTools();
 
 const search = ref('');
 const images = ref<GalleryItem[]>([]);
@@ -31,6 +33,31 @@ const selectedIds = ref<Set<string>>(new Set());
 // 分页
 const page = ref(1);
 const pageSize = ref(24);
+
+// filteredImages 需要先定义，供 useGalleryNavigation 使用
+const filteredImages = computed(() => {
+  if (!search.value.trim()) return images.value;
+  const q = search.value.trim().toLowerCase();
+  return images.value.filter(
+    (img) => String(img.seed).includes(q) || img.prompt.toLowerCase().includes(q),
+  );
+});
+
+// 画廊导航
+const {
+  hasPrev,
+  hasNext,
+  currentIndex,
+  total: navTotal,
+  goToPrev,
+  goToNext,
+} = useGalleryNavigation({
+  currentItem: selectedImage,
+  items: filteredImages,
+  isDialogOpen: showDialog,
+  getItemId: (item) => item.id,
+  loop: true,
+});
 
 // 按日期分组的图片
 const groupedImages = computed(() => {
@@ -59,14 +86,6 @@ const sortedDates = computed(() => {
 function getImagesForDate(date: string): GalleryItem[] {
   return groupedImages.value[date] || [];
 }
-
-const filteredImages = computed(() => {
-  if (!search.value.trim()) return images.value;
-  const q = search.value.trim().toLowerCase();
-  return images.value.filter(
-    (img) => String(img.seed).includes(q) || img.prompt.toLowerCase().includes(q),
-  );
-});
 
 const totalPages = computed(() =>
   Math.max(1, Math.ceil(filteredImages.value.length / pageSize.value)),
@@ -142,53 +161,6 @@ function deselectAll() {
   selectedIds.value = new Set();
 }
 
-// 图片处理工具函数
-async function fetchImageAsBlob(url: string): Promise<Blob> {
-  const response = await fetch(url);
-  return response.blob();
-}
-
-async function removeMetadata(blob: Blob): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        reject(new Error('Failed to get canvas context'));
-        return;
-      }
-      ctx.drawImage(img, 0, 0);
-      canvas.toBlob(
-        (newBlob) => {
-          if (newBlob) {
-            resolve(newBlob);
-          } else {
-            reject(new Error('Failed to create blob'));
-          }
-        },
-        'image/png',
-        1,
-      );
-    };
-    img.onerror = () => reject(new Error('Failed to load image'));
-    img.src = URL.createObjectURL(blob);
-  });
-}
-
-function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
 // 下载原图
 async function downloadOriginal() {
   if (!selectedImage.value) return;
@@ -220,9 +192,7 @@ async function downloadWithoutMetadata() {
 async function copyWithoutMetadata() {
   if (!selectedImage.value) return;
   try {
-    const blob = await fetchImageAsBlob(selectedImage.value.url);
-    const cleanBlob = await removeMetadata(blob);
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': cleanBlob })]);
+    await copyImageToClipboard(selectedImage.value.url);
     $q.notify({ type: 'positive', message: '已复制到剪贴板' });
   } catch (err) {
     console.error(err);
@@ -467,6 +437,9 @@ async function load() {
           <span class="q-ml-sm">图片预览</span>
           <q-space />
           <div class="row items-center q-gutter-sm">
+            <q-chip dense color="grey-8" text-color="white" icon="tag">
+              {{ currentIndex + 1 }} / {{ navTotal }}
+            </q-chip>
             <q-chip dense color="grey-8" text-color="white" icon="fingerprint">
               Seed: {{ selectedImage?.seed }}
             </q-chip>
@@ -499,12 +472,40 @@ async function load() {
         </q-bar>
 
         <q-card-section class="col q-pa-none flex flex-center preview-area">
+          <!-- 左导航按钮 -->
+          <q-btn
+            v-if="hasPrev"
+            class="nav-btn nav-btn-left"
+            round
+            flat
+            size="lg"
+            icon="chevron_left"
+            color="white"
+            @click="goToPrev"
+          >
+            <q-tooltip>上一张 (←)</q-tooltip>
+          </q-btn>
+
           <q-img
             v-if="selectedImage"
             :src="selectedImage.url"
             fit="contain"
             class="preview-image"
           />
+
+          <!-- 右导航按钮 -->
+          <q-btn
+            v-if="hasNext"
+            class="nav-btn nav-btn-right"
+            round
+            flat
+            size="lg"
+            icon="chevron_right"
+            color="white"
+            @click="goToNext"
+          >
+            <q-tooltip>下一张 (→)</q-tooltip>
+          </q-btn>
         </q-card-section>
       </q-card>
     </q-dialog>
@@ -653,10 +654,32 @@ async function load() {
 .preview-area {
   background: #000;
   overflow: hidden;
+  position: relative;
 }
 
 .preview-image {
   max-height: calc(100vh - 80px);
   max-width: 100%;
+}
+
+.nav-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  background: rgba(0, 0, 0, 0.5);
+  transition: all 0.2s;
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.7);
+  }
+}
+
+.nav-btn-left {
+  left: 16px;
+}
+
+.nav-btn-right {
+  right: 16px;
 }
 </style>

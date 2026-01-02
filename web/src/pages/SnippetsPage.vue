@@ -4,12 +4,16 @@ import { useQuasar } from 'quasar';
 import { useClipboard, useDebounceFn } from '@vueuse/core';
 import {
   createSnippet,
+  updateSnippet,
   fetchSnippets,
   fetchSnippet,
   deleteSnippet,
+  deleteSnippetPreview,
   type SnippetSummary,
+  apiBase,
 } from 'src/services/api';
 import PromptEditor from 'src/components/PromptEditor.vue';
+import { useImageUpload } from 'src/composables';
 
 const { notify, dialog } = useQuasar();
 const { copy } = useClipboard();
@@ -25,13 +29,44 @@ const deleting = ref(false);
 const openDialog = ref(false);
 const editingId = ref<string | null>(null);
 const editLoading = ref(false);
-const form = ref({ name: '', category: '', tags: '', description: '', content: '' });
+const form = ref({
+  name: '',
+  category: '',
+  tags: '',
+  description: '',
+  content: '',
+  existingPreviewPath: null as string | null,
+});
 const saving = ref(false);
+
+// 图片上传
+const {
+  previewUrl,
+  base64Data,
+  hasImage,
+  loading: imageLoading,
+  error: imageError,
+  selectFile,
+  handleFileChange,
+  handleDrop,
+  clearImage,
+  reset: resetImage,
+  fileInputRef,
+} = useImageUpload();
 
 // 整体页面锁定状态（任何异步操作期间）
 const isLocked = computed(
-  () => loading.value || saving.value || deleting.value || editLoading.value,
+  () => loading.value || saving.value || deleting.value || editLoading.value || imageLoading.value,
 );
+
+// 当前预览图 URL（可能是新上传的或已存在的）
+const currentPreviewUrl = computed(() => {
+  if (previewUrl.value) return previewUrl.value;
+  if (form.value.existingPreviewPath) {
+    return `${apiBase}/previews/${form.value.existingPreviewPath}`;
+  }
+  return null;
+});
 
 const dialogTitle = computed(() => (editingId.value ? '编辑 Snippet' : '新建 Snippet'));
 
@@ -77,7 +112,15 @@ async function load() {
 
 function openCreate() {
   editingId.value = null;
-  form.value = { name: '', category: '', tags: '', description: '', content: '' };
+  form.value = {
+    name: '',
+    category: '',
+    tags: '',
+    description: '',
+    content: '',
+    existingPreviewPath: null,
+  };
+  resetImage();
   openDialog.value = true;
 }
 
@@ -92,7 +135,9 @@ async function openEdit(id: string) {
       tags: snippet.tags.join(', '),
       description: snippet.description || '',
       content: snippet.content,
+      existingPreviewPath: snippet.preview_path || null,
     };
+    resetImage();
     openDialog.value = true;
   } catch (err) {
     console.error(err);
@@ -114,26 +159,52 @@ async function save() {
 
   saving.value = true;
   try {
-    const payload: {
-      name: string;
-      category: string;
-      content: string;
-      description?: string;
-      tags?: string[];
-    } = {
-      name: form.value.name,
-      category: form.value.category || '默认',
-      content: form.value.content,
-    };
-    if (form.value.description) payload.description = form.value.description;
     const parsedTags = form.value.tags
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
-    if (parsedTags.length > 0) payload.tags = parsedTags;
 
-    await createSnippet(payload);
-    notify({ type: 'positive', message: editingId.value ? '已更新' : '已创建' });
+    if (editingId.value) {
+      // 更新
+      const payload: {
+        name?: string;
+        category?: string;
+        content?: string;
+        description?: string;
+        tags?: string[];
+        preview_base64?: string;
+      } = {
+        name: form.value.name,
+        category: form.value.category || '默认',
+        content: form.value.content,
+      };
+      if (form.value.description) payload.description = form.value.description;
+      if (parsedTags.length > 0) payload.tags = parsedTags;
+      if (base64Data.value) payload.preview_base64 = base64Data.value;
+
+      await updateSnippet(editingId.value, payload);
+      notify({ type: 'positive', message: '已更新' });
+    } else {
+      // 新建
+      const payload: {
+        name: string;
+        category: string;
+        content: string;
+        description?: string;
+        tags?: string[];
+        preview_base64?: string;
+      } = {
+        name: form.value.name,
+        category: form.value.category || '默认',
+        content: form.value.content,
+      };
+      if (form.value.description) payload.description = form.value.description;
+      if (parsedTags.length > 0) payload.tags = parsedTags;
+      if (base64Data.value) payload.preview_base64 = base64Data.value;
+
+      await createSnippet(payload);
+      notify({ type: 'positive', message: '已创建' });
+    }
     openDialog.value = false;
     await load();
   } catch (err) {
@@ -141,6 +212,24 @@ async function save() {
     notify({ type: 'negative', message: '保存失败' });
   } finally {
     saving.value = false;
+  }
+}
+
+async function removePreview() {
+  if (!editingId.value) {
+    clearImage();
+    form.value.existingPreviewPath = null;
+    return;
+  }
+
+  try {
+    await deleteSnippetPreview(editingId.value);
+    form.value.existingPreviewPath = null;
+    clearImage();
+    notify({ type: 'positive', message: '预览图已删除' });
+  } catch (err) {
+    console.error(err);
+    notify({ type: 'negative', message: '删除预览图失败' });
   }
 }
 
@@ -257,6 +346,21 @@ watch(page, () => {
               flat
               bordered
             >
+              <!-- 预览图 -->
+              <q-img
+                v-if="snip.preview_path"
+                :src="`${apiBase}/previews/${snip.preview_path}`"
+                :ratio="16 / 9"
+                fit="cover"
+                class="snippet-preview"
+              >
+                <template v-slot:loading>
+                  <div class="flex flex-center full-height">
+                    <q-spinner-gears color="primary" size="1.5rem" />
+                  </div>
+                </template>
+              </q-img>
+
               <q-card-section class="q-pb-sm">
                 <div class="row items-center no-wrap">
                   <q-icon name="code" color="secondary" size="sm" class="q-mr-sm" />
@@ -424,6 +528,46 @@ watch(page, () => {
               hint="可选，简要说明该 Snippet 的用途"
             />
 
+            <!-- 预览图 -->
+            <div class="preview-upload-section">
+              <div class="text-caption text-grey-7 q-mb-sm">预览图（可选）</div>
+              <input
+                ref="fileInputRef"
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                style="display: none"
+                @change="handleFileChange"
+              />
+
+              <div
+                v-if="!currentPreviewUrl"
+                class="upload-area"
+                @click="selectFile"
+                @drop.prevent="handleDrop"
+                @dragover.prevent
+              >
+                <q-icon name="add_photo_alternate" size="2rem" color="grey-5" />
+                <div class="text-caption text-grey-6 q-mt-sm">点击或拖拽上传预览图</div>
+                <div class="text-caption text-grey-5">支持 PNG/JPEG/WebP，最大 5MB</div>
+              </div>
+
+              <div v-else class="preview-container">
+                <q-img :src="currentPreviewUrl" fit="contain" class="preview-image" />
+                <div class="preview-actions">
+                  <q-btn round flat dense icon="edit" @click="selectFile">
+                    <q-tooltip>更换图片</q-tooltip>
+                  </q-btn>
+                  <q-btn round flat dense icon="delete" color="negative" @click="removePreview">
+                    <q-tooltip>删除图片</q-tooltip>
+                  </q-btn>
+                </div>
+              </div>
+
+              <div v-if="imageError" class="text-negative text-caption q-mt-xs">
+                {{ imageError }}
+              </div>
+            </div>
+
             <!-- 内容 -->
             <div>
               <PromptEditor
@@ -514,11 +658,60 @@ watch(page, () => {
   }
 }
 
+.snippet-preview {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
 .ellipsis-2-lines {
   display: -webkit-box;
   line-clamp: 2;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+// 预览图上传样式
+.preview-upload-section {
+  margin-top: 8px;
+}
+
+.upload-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  border: 2px dashed rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+
+  &:hover {
+    border-color: var(--q-primary);
+    background: rgba(25, 118, 210, 0.04);
+  }
+}
+
+.preview-container {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+
+  .preview-image {
+    max-height: 200px;
+    width: 100%;
+  }
+
+  .preview-actions {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    gap: 4px;
+    background: rgba(255, 255, 255, 0.9);
+    border-radius: 4px;
+    padding: 2px;
+  }
 }
 </style>

@@ -84,6 +84,10 @@ pub async fn serve(cfg: ServerConfig) -> Result<()> {
             "/presets/{id}",
             get(get_preset).put(update_preset).delete(delete_preset),
         )
+        .route(
+            "/presets/{id}/preview",
+            put(update_preset_preview).delete(delete_preset_preview),
+        )
         .route("/presets/{id}/rename", post(rename_preset))
         .route(
             "/settings/generation",
@@ -502,6 +506,8 @@ struct CreatePresetPayload {
     uc_after: Option<String>,
     #[serde(default)]
     uc_replace: Option<String>,
+    #[serde(default)]
+    preview_base64: Option<String>,
 }
 
 async fn create_preset(
@@ -517,8 +523,20 @@ async fn create_preset(
     preset.uc_after = payload.uc_after;
     preset.uc_replace = payload.uc_replace;
 
+    let preview_bytes = match payload.preview_base64 {
+        Some(b64) => match BASE64_STANDARD.decode(b64) {
+            Ok(bytes) => Some(bytes),
+            Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+        },
+        None => None,
+    };
+
     let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.upsert_preset(preset)).await {
+    match tokio::task::spawn_blocking(move || {
+        storage.upsert_preset_with_preview(preset, preview_bytes.as_deref())
+    })
+    .await
+    {
         Ok(Ok(saved)) => Json(saved).into_response(),
         Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
@@ -545,6 +563,7 @@ struct UpdatePresetPayload {
     uc_before: Option<String>,
     uc_after: Option<String>,
     uc_replace: Option<String>,
+    preview_base64: Option<String>,
 }
 
 async fn update_preset(
@@ -593,7 +612,51 @@ async fn update_preset(
     }
     preset.updated_at = chrono::Utc::now();
 
-    match tokio::task::spawn_blocking(move || storage.upsert_preset(preset)).await {
+    let preview_bytes = match payload.preview_base64 {
+        Some(b64) => match BASE64_STANDARD.decode(b64) {
+            Ok(bytes) => Some(bytes),
+            Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+        },
+        None => None,
+    };
+
+    match tokio::task::spawn_blocking(move || {
+        storage.upsert_preset_with_preview(preset, preview_bytes.as_deref())
+    })
+    .await
+    {
+        Ok(Ok(saved)) => Json(saved).into_response(),
+        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+async fn update_preset_preview(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<UpdatePreviewPayload>,
+) -> impl IntoResponse {
+    let preview_bytes = match BASE64_STANDARD.decode(&payload.preview_base64) {
+        Ok(bytes) => bytes,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
+
+    let storage = Arc::clone(&state.storage);
+    match tokio::task::spawn_blocking(move || storage.update_preset_preview(id, &preview_bytes))
+        .await
+    {
+        Ok(Ok(saved)) => Json(saved).into_response(),
+        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+async fn delete_preset_preview(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let storage = Arc::clone(&state.storage);
+    match tokio::task::spawn_blocking(move || storage.delete_preset_preview(id)).await {
         Ok(Ok(saved)) => Json(saved).into_response(),
         Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
