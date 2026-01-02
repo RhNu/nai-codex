@@ -5,7 +5,7 @@
  * - 键盘左右键切换图片
  * - 支持循环/非循环模式
  */
-import { computed, watch, type Ref } from 'vue';
+import { computed, type Ref } from 'vue';
 import { useEventListener } from '@vueuse/core';
 
 export interface UseGalleryNavigationOptions<T> {
@@ -21,7 +21,7 @@ export interface UseGalleryNavigationOptions<T> {
   loop?: boolean;
 }
 
-export interface UseGalleryNavigationReturn<T> {
+export interface UseGalleryNavigationReturn {
   /** 是否有上一项 */
   hasPrev: Ref<boolean>;
   /** 是否有下一项 */
@@ -40,7 +40,7 @@ export interface UseGalleryNavigationReturn<T> {
 
 export function useGalleryNavigation<T>(
   options: UseGalleryNavigationOptions<T>,
-): UseGalleryNavigationReturn<T> {
+): UseGalleryNavigationReturn {
   const { currentItem, items, isDialogOpen, getItemId, loop = true } = options;
 
   const currentIndex = computed(() => {

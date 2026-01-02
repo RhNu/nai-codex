@@ -43,7 +43,6 @@ const saving = ref(false);
 const {
   previewUrl,
   base64Data,
-  hasImage,
   loading: imageLoading,
   error: imageError,
   selectFile,
