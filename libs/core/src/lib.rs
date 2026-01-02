@@ -944,6 +944,7 @@ fn to_nai_request(task: &GenerateTaskRequest, prompt: &str, seed: u64) -> ImageG
         add_quality_tags: task.params.add_quality_tags,
         undesired_content_preset: task.params.undesired_content_preset,
         legacy_uc: false,
+        variety_plus: false,
     }
 }
 

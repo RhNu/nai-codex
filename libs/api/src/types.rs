@@ -12,12 +12,19 @@ pub enum Model {
 }
 
 impl Model {
-    pub fn quality_tags(&self) -> &'static str {
+    pub const fn quality_tags(&self) -> &'static str {
         match self {
             Self::V45Full => ", very aesthetic, masterpiece, no text",
             Self::V45Curated => {
                 ", very aesthetic, masterpiece, no text, -0.8::feet::, rating:general"
             }
+        }
+    }
+
+    pub const fn skip_cfg_above_sigma(&self) -> f32 {
+        match self {
+            Self::V45Full => 58.0,
+            Self::V45Curated => 36.158_893_609_242_725,
         }
     }
 }
@@ -81,6 +88,10 @@ pub struct ImageGenerationRequest {
     pub sampler: Sampler,
     #[serde(default)]
     pub noise: Noise,
+
+    /// Variety Plus mode
+    #[serde(default)]
+    pub variety_plus: bool,
 
     /// CFG Rescale value; Defaults to 0.0 if not specified
     #[serde(default)]

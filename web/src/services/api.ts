@@ -3,6 +3,9 @@ import axios from 'axios';
 export const apiBase = import.meta.env.VITE_API_BASE || '/api';
 export const api = axios.create({ baseURL: apiBase });
 
+// 预览图服务路径（服务端挂载在根路径下，不在 /api 下）
+export const previewsBase = '/previews';
+
 // ============== Types ==============
 
 export type Center = { x: number; y: number };

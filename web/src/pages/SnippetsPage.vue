@@ -10,7 +10,7 @@ import {
   deleteSnippet,
   deleteSnippetPreview,
   type SnippetSummary,
-  apiBase,
+  previewsBase,
 } from 'src/services/api';
 import PromptEditor from 'src/components/PromptEditor.vue';
 import { useImageUpload } from 'src/composables';
@@ -62,7 +62,7 @@ const isLocked = computed(
 const currentPreviewUrl = computed(() => {
   if (previewUrl.value) return previewUrl.value;
   if (form.value.existingPreviewPath) {
-    return `${apiBase}/previews/${form.value.existingPreviewPath}`;
+    return `${previewsBase}/${form.value.existingPreviewPath}`;
   }
   return null;
 });
@@ -348,7 +348,7 @@ watch(page, () => {
               <!-- 预览图 -->
               <q-img
                 v-if="snip.preview_path"
-                :src="`${apiBase}/previews/${snip.preview_path}`"
+                :src="`${previewsBase}/${snip.preview_path}`"
                 :ratio="16 / 9"
                 fit="cover"
                 class="snippet-preview"

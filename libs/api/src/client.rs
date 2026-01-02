@@ -95,21 +95,25 @@ impl NaiClient {
                 "params_version": 3,
                 "width": req.width,
                 "height": req.height,
-                "negative_prompt": req.prompt_negative,
-                "steps": req.steps,
                 "scale": req.scale,
-                "seed": seed,
                 "sampler": req.sampler,
+                "steps": req.steps,
                 "n_samples": 1,
                 "ucPreset": uc_preset_id,
                 "qualityToggle": req.add_quality_tags,
+                "autoSmea": false,
+                "dynamic_thresholding": false,
+                "legacy": false,
+                "legacy_v3_extend": false,
+                "add_original_image": true,
+                "seed": seed,
+                "negative_prompt": req.prompt_negative,
                 "cfg_rescale": req.cfg_rescale,
                 "noise_schedule": req.noise,
-                "legacy_uc": false,
-                "legacy_v3_extend": false,
                 "autoSmea": false,
                 "legacy": false,
                 "dynamic_thresholding": false,
+                "stream": "msgpack"
             },
             "use_new_shared_trial": true,
         });
@@ -143,19 +147,28 @@ impl NaiClient {
         payload["parameters"]["use_coords"] = json!(req.need_use_coords());
         payload["parameters"]["characterPrompts"] = json!(enabled_chars);
         payload["parameters"]["v4_prompt"] = json!({
-            "caption": {"base_caption": prompt, "char_captions": char_positive},
+            "caption": {
+                "base_caption": prompt,
+                "char_captions": char_positive
+            },
             "use_coords": use_coords,
             "use_order": true
         });
         payload["parameters"]["v4_negative_prompt"] = json!({
-            "caption": {"base_caption": req.prompt_negative, "char_captions": char_negative},
+            "caption": {
+                "base_caption": req.prompt_negative,
+                "char_captions": char_negative
+            },
             "legacy_uc": false
         });
-        payload["parameters"]["stream"] = json!("msgpack");
 
         if req.sampler == Sampler::EulerAncestral {
             payload["parameters"]["deliberate_euler_ancestral_bug"] = json!(false);
             payload["parameters"]["prefer_brownian"] = json!(true);
+        }
+
+        if req.variety_plus {
+            payload["parameters"]["skip_cfg_above_sigma"] = json!(req.model.skip_cfg_above_sigma());
         }
 
         let bytes = self.post_generate_image(&payload).await?;
