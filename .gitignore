@@ -1,0 +1,30 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+
+# IDE
+/.idea
+*.iml
+/.vscode
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+
+# Development
+.dev/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Other
+start-dev.ps1

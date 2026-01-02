@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  codex:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: codex-app
+    ports:
+      - "8080:8080"
+    volumes:
+      - codex-data:/data
+    environment:
+      - CODEX_DB_PATH=/data/codex.redb
+      - CODEX_PREVIEW_DIR=/data/previews
+      - CODEX_GALLERY_DIR=/data/gallery
+      - CODEX_STATIC_DIR=/app/static
+      - CODEX_ADDR=0.0.0.0:8080
+      - CODEX_NAI_TOKEN=${CODEX_NAI_TOKEN}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  codex-data:
+    driver: local
