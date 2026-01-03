@@ -1,9 +1,9 @@
 {
   "name": "codex-web",
-  "version": "0.0.1",
+  "version": "0.2.0",
   "description": "NovelAI Image Generation Toolkit",
   "productName": "Codex",
-  "author": "Rhynia <vssr@foxmail.com>",
+  "author": "Rhynia",
   "type": "module",
   "private": true,
   "scripts": {
