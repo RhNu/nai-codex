@@ -74,8 +74,15 @@ useEventListener('paste', (event: ClipboardEvent) => {
   void handlePaste(event);
 });
 
-// 预览大图对话框
-const showFullPreview = ref(false);
+// 列表卡片图片放大对话框
+const showCardImagePreview = ref(false);
+const cardImagePreviewUrl = ref<string | null>(null);
+
+// 点击列表卡片图片时放大
+function openCardImagePreview(previewPath: string) {
+  cardImagePreviewUrl.value = `${previewsBase}/${previewPath}`;
+  showCardImagePreview.value = true;
+}
 
 // ============== 主预设状态 ==============
 const mainPresets = ref<MainPreset[]>([]);
@@ -482,13 +489,15 @@ watch(mainPage, () => {
                 :src="`${previewsBase}/${p.preview_path}`"
                 :ratio="16 / 9"
                 fit="cover"
-                class="preset-preview"
+                class="preset-preview cursor-pointer"
+                @click="openCardImagePreview(p.preview_path!)"
               >
                 <template v-slot:loading>
                   <div class="flex flex-center full-height">
                     <q-spinner-gears color="primary" size="1.5rem" />
                   </div>
                 </template>
+                <q-tooltip>点击查看完整图片</q-tooltip>
               </q-img>
 
               <q-card-section>
@@ -694,18 +703,8 @@ watch(mainPage, () => {
             </div>
 
             <div v-else class="preview-container">
-              <q-img
-                :src="currentPreviewUrl"
-                fit="contain"
-                class="preview-image cursor-pointer"
-                @click="showFullPreview = true"
-              >
-                <q-tooltip>点击查看完整图片</q-tooltip>
-              </q-img>
+              <q-img :src="currentPreviewUrl" fit="contain" class="preview-image" />
               <div class="preview-actions">
-                <q-btn round flat dense icon="fullscreen" @click="showFullPreview = true">
-                  <q-tooltip>查看完整图片</q-tooltip>
-                </q-btn>
                 <q-btn round flat dense icon="edit" @click="selectFile">
                   <q-tooltip>更换图片</q-tooltip>
                 </q-btn>
@@ -845,8 +844,8 @@ watch(mainPage, () => {
       </q-card>
     </q-dialog>
 
-    <!-- 预览图大图对话框 -->
-    <q-dialog v-model="showFullPreview">
+    <!-- 列表卡片图片放大对话框 -->
+    <q-dialog v-model="showCardImagePreview">
       <q-card class="full-preview-card bg-black">
         <q-bar class="bg-dark text-white">
           <q-icon name="image" />
@@ -855,7 +854,7 @@ watch(mainPage, () => {
           <q-btn dense flat icon="close" v-close-popup />
         </q-bar>
         <q-card-section class="flex flex-center q-pa-none full-preview-content">
-          <q-img :src="currentPreviewUrl ?? undefined" fit="contain" class="full-preview-image" />
+          <q-img :src="cardImagePreviewUrl ?? undefined" fit="contain" class="full-preview-image" />
         </q-card-section>
       </q-card>
     </q-dialog>

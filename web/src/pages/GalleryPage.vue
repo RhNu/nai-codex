@@ -2,7 +2,19 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useQuasar } from 'quasar';
 import { useClipboard } from '@vueuse/core';
-import { fetchRecentRecords, deleteRecordsBatch, type GenerationRecord } from 'src/services/api';
+import {
+  fetchRecentRecords,
+  deleteRecordsBatch,
+  fetchArchives,
+  fetchArchivableDates,
+  createArchive,
+  createArchiveSelected,
+  deleteArchive,
+  getArchiveDownloadUrl,
+  type GenerationRecord,
+  type ArchiveInfo,
+  type ArchivableDate,
+} from 'src/services/api';
 import { useGalleryNavigation, useImageTools } from 'src/composables';
 
 type GalleryItem = {
@@ -36,6 +48,14 @@ const pageSize = ref(24);
 
 // 当前选中的日期 Tab
 const selectedDateTab = ref<string | null>(null);
+
+// 归档相关状态
+const archives = ref<ArchiveInfo[]>([]);
+const archivableDates = ref<ArchivableDate[]>([]);
+const selectedArchiveDates = ref<Set<string>>(new Set());
+const archivesLoading = ref(false);
+const archiveCreating = ref(false);
+const showArchiveDialog = ref(false);
 
 // 搜索变化时重置页码和日期Tab
 watch(search, () => {
@@ -293,6 +313,145 @@ watch(
   { immediate: true },
 );
 
+// ============== 归档功能 ==============
+
+async function loadArchives() {
+  archivesLoading.value = true;
+  try {
+    const [archiveList, dateList] = await Promise.all([fetchArchives(), fetchArchivableDates()]);
+    archives.value = archiveList;
+    archivableDates.value = dateList;
+    // 重置选择
+    selectedArchiveDates.value = new Set();
+  } catch (err) {
+    console.error('Failed to load archives:', err);
+  } finally {
+    archivesLoading.value = false;
+  }
+}
+
+function openArchiveDialog() {
+  showArchiveDialog.value = true;
+  void loadArchives();
+}
+
+function toggleArchiveDateSelect(date: string) {
+  if (selectedArchiveDates.value.has(date)) {
+    selectedArchiveDates.value.delete(date);
+  } else {
+    selectedArchiveDates.value.add(date);
+  }
+  selectedArchiveDates.value = new Set(selectedArchiveDates.value);
+}
+
+function selectAllArchiveDates() {
+  archivableDates.value.forEach((d) => selectedArchiveDates.value.add(d.date));
+  selectedArchiveDates.value = new Set(selectedArchiveDates.value);
+}
+
+function deselectAllArchiveDates() {
+  selectedArchiveDates.value.clear();
+  selectedArchiveDates.value = new Set();
+}
+
+function confirmCreateArchive() {
+  $q.dialog({
+    title: '一键归档全部',
+    message:
+      '将按日期分别压缩今天之前的所有图片（每天一个 zip 文件），压缩后原图片文件夹和数据库记录将被删除。\n\n此操作不可撤销，确定继续吗？',
+    cancel: true,
+    persistent: true,
+  }).onOk(() => {
+    void (async () => {
+      archiveCreating.value = true;
+      try {
+        const result = await createArchive();
+        const archiveNames = result.archives.map((a) => a.name).join(', ');
+        $q.notify({
+          type: 'positive',
+          message: `归档创建成功: ${archiveNames}（删除了 ${result.deleted_records} 条记录）`,
+          timeout: 5000,
+        });
+        await loadArchives();
+        await load(); // 重新加载画廊（被归档的图片已删除）
+      } catch (err: unknown) {
+        console.error('Failed to create archive:', err);
+        const message = err instanceof Error ? err.message : '创建归档失败';
+        $q.notify({ type: 'negative', message });
+      } finally {
+        archiveCreating.value = false;
+      }
+    })();
+  });
+}
+
+function confirmCreateArchiveSelected() {
+  const dates = Array.from(selectedArchiveDates.value);
+  if (dates.length === 0) {
+    $q.notify({ type: 'warning', message: '请先选择要归档的日期' });
+    return;
+  }
+
+  $q.dialog({
+    title: '归档选中日期',
+    message: `将归档以下 ${dates.length} 个日期的图片：\n${dates.join(', ')}\n\n压缩后原图片文件夹和数据库记录将被删除。此操作不可撤销，确定继续吗？`,
+    cancel: true,
+    persistent: true,
+  }).onOk(() => {
+    void (async () => {
+      archiveCreating.value = true;
+      try {
+        const result = await createArchiveSelected(dates);
+        const archiveNames = result.archives.map((a) => a.name).join(', ');
+        $q.notify({
+          type: 'positive',
+          message: `归档创建成功: ${archiveNames}（删除了 ${result.deleted_records} 条记录）`,
+          timeout: 5000,
+        });
+        await loadArchives();
+        await load(); // 重新加载画廊
+      } catch (err: unknown) {
+        console.error('Failed to create archive:', err);
+        const message = err instanceof Error ? err.message : '创建归档失败';
+        $q.notify({ type: 'negative', message });
+      } finally {
+        archiveCreating.value = false;
+      }
+    })();
+  });
+}
+
+function downloadArchiveFile(name: string) {
+  window.open(getArchiveDownloadUrl(name), '_blank');
+}
+
+function confirmDeleteArchive(archive: ArchiveInfo) {
+  $q.dialog({
+    title: '删除归档',
+    message: `确定要删除归档 "${archive.name}" 吗？此操作不可恢复。`,
+    cancel: true,
+    persistent: true,
+  }).onOk(() => {
+    void (async () => {
+      try {
+        await deleteArchive(archive.name);
+        $q.notify({ type: 'positive', message: '归档已删除' });
+        await loadArchives();
+      } catch (err) {
+        console.error('Failed to delete archive:', err);
+        $q.notify({ type: 'negative', message: '删除归档失败' });
+      }
+    })();
+  });
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
 onMounted(() => {
   void load();
 });
@@ -331,6 +490,9 @@ async function load() {
     <div class="page-header">
       <div class="text-h5">画廊</div>
       <div class="row q-gutter-sm">
+        <q-btn flat icon="archive" @click="openArchiveDialog">
+          <q-tooltip>归档管理</q-tooltip>
+        </q-btn>
         <q-btn
           flat
           :icon="selectMode ? 'close' : 'checklist'"
@@ -568,6 +730,122 @@ async function load() {
         </q-card-section>
       </q-card>
     </q-dialog>
+
+    <!-- 归档管理对话框 -->
+    <q-dialog v-model="showArchiveDialog">
+      <q-card style="min-width: 500px; max-width: 700px">
+        <q-bar class="bg-primary text-white">
+          <q-icon name="archive" />
+          <span class="q-ml-sm">归档管理</span>
+          <q-space />
+          <q-btn dense flat icon="close" v-close-popup />
+        </q-bar>
+
+        <q-card-section>
+          <div class="text-body2 text-grey-7 q-mb-md">
+            归档功能会将图片压缩成 zip 文件（每天一个），压缩后原图片文件夹和数据库记录将被删除。
+            归档后的图片无法在画廊中浏览，但可以下载或删除归档文件。
+          </div>
+
+          <!-- 可归档日期选择 -->
+          <div v-if="archivableDates.length > 0" class="q-mb-md">
+            <div class="row items-center q-mb-sm">
+              <div class="text-subtitle2">选择要归档的日期</div>
+              <q-space />
+              <q-btn flat dense size="sm" label="全选" @click="selectAllArchiveDates" />
+              <q-btn flat dense size="sm" label="取消" @click="deselectAllArchiveDates" />
+            </div>
+
+            <div class="archivable-dates-grid">
+              <q-checkbox
+                v-for="d in archivableDates"
+                :key="d.date"
+                :model-value="selectedArchiveDates.has(d.date)"
+                @update:model-value="toggleArchiveDateSelect(d.date)"
+                :label="`${d.date} (${d.image_count}张, ${formatFileSize(d.total_size)})`"
+                dense
+                class="archivable-date-item"
+              />
+            </div>
+
+            <div class="row q-gutter-sm q-mt-md">
+              <q-btn
+                color="primary"
+                icon="archive"
+                :label="`归档选中 (${selectedArchiveDates.size})`"
+                :loading="archiveCreating"
+                :disable="selectedArchiveDates.size === 0"
+                @click="confirmCreateArchiveSelected"
+              />
+              <q-btn
+                outline
+                color="primary"
+                icon="select_all"
+                label="一键归档全部"
+                :loading="archiveCreating"
+                @click="confirmCreateArchive"
+              />
+            </div>
+          </div>
+
+          <div v-else-if="!archivesLoading" class="text-grey-6 text-center q-pa-md">
+            没有可归档的日期（仅今天的图片）
+          </div>
+        </q-card-section>
+
+        <q-separator />
+
+        <q-card-section>
+          <div class="text-subtitle2 q-mb-sm">已有归档</div>
+
+          <div v-if="archivesLoading" class="flex flex-center q-pa-md">
+            <q-spinner color="primary" size="2em" />
+          </div>
+
+          <div v-else-if="archives.length === 0" class="text-grey-6 text-center q-pa-md">
+            暂无归档文件
+          </div>
+
+          <q-list v-else separator>
+            <q-item v-for="archive in archives" :key="archive.name">
+              <q-item-section avatar>
+                <q-icon name="folder_zip" color="primary" />
+              </q-item-section>
+              <q-item-section>
+                <q-item-label>{{ archive.name }}</q-item-label>
+                <q-item-label caption>
+                  {{ formatFileSize(archive.size) }} ·
+                  {{ new Date(archive.created_at).toLocaleString('zh-CN') }}
+                </q-item-label>
+              </q-item-section>
+              <q-item-section side>
+                <div class="row q-gutter-xs">
+                  <q-btn
+                    flat
+                    round
+                    dense
+                    icon="download"
+                    @click="downloadArchiveFile(archive.name)"
+                  >
+                    <q-tooltip>下载</q-tooltip>
+                  </q-btn>
+                  <q-btn
+                    flat
+                    round
+                    dense
+                    icon="delete"
+                    color="negative"
+                    @click="confirmDeleteArchive(archive)"
+                  >
+                    <q-tooltip>删除</q-tooltip>
+                  </q-btn>
+                </div>
+              </q-item-section>
+            </q-item>
+          </q-list>
+        </q-card-section>
+      </q-card>
+    </q-dialog>
   </q-page>
 </template>
 
@@ -582,6 +860,21 @@ async function load() {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 16px;
+}
+
+.archivable-dates-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 4px;
+}
+
+.archivable-date-item {
+  font-size: 13px;
 }
 
 .empty-state-card {

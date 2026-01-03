@@ -511,3 +511,50 @@ export async function searchLexicon(params: { q: string; limit?: number; offset?
   const { data } = await api.get<LexiconSearchResult>('/lexicon/search', { params });
   return data;
 }
+
+// ============== Archives ==============
+
+export type ArchiveInfo = {
+  name: string;
+  size: number;
+  created_at: string;
+};
+
+export type ArchiveResult = {
+  archives: ArchiveInfo[];
+  deleted_records: number;
+};
+
+export type ArchivableDate = {
+  date: string;
+  image_count: number;
+  total_size: number;
+};
+
+export async function fetchArchives() {
+  const { data } = await api.get<ArchiveInfo[]>('/archives');
+  return data;
+}
+
+export async function fetchArchivableDates() {
+  const { data } = await api.get<ArchivableDate[]>('/archives/dates');
+  return data;
+}
+
+export async function createArchive() {
+  const { data } = await api.post<ArchiveResult>('/archives');
+  return data;
+}
+
+export async function createArchiveSelected(dates: string[]) {
+  const { data } = await api.post<ArchiveResult>('/archives/selected', { dates });
+  return data;
+}
+
+export async function deleteArchive(name: string) {
+  await api.delete(`/archives/${encodeURIComponent(name)}`);
+}
+
+export function getArchiveDownloadUrl(name: string) {
+  return `${apiBase}/archives/${encodeURIComponent(name)}`;
+}

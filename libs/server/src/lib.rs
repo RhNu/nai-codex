@@ -11,9 +11,9 @@ use axum::{
 use base64::{self, Engine, prelude::BASE64_STANDARD};
 use codex_api::NaiClient;
 use codex_core::{
-    CharacterPreset, CharacterSlotSettings, CoreStorage, GalleryPaths, GenerateTaskRequest,
-    GenerationParams, GenerationRecord, HighlightSpan, LastGenerationSettings, Lexicon, MainPreset,
-    MainPresetSettings, PromptParser, PromptProcessor, Snippet, TaskExecutor,
+    ArchiveManager, CharacterPreset, CharacterSlotSettings, CoreStorage, GalleryPaths,
+    GenerateTaskRequest, GenerationParams, GenerationRecord, HighlightSpan, LastGenerationSettings,
+    Lexicon, MainPreset, MainPresetSettings, PromptParser, PromptProcessor, Snippet, TaskExecutor,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, mpsc};
@@ -116,6 +116,14 @@ pub async fn serve(cfg: ServerConfig) -> Result<()> {
         .route("/lexicon", get(get_lexicon_index))
         .route("/lexicon/categories/{name}", get(get_lexicon_category))
         .route("/lexicon/search", get(search_lexicon))
+        // 归档 API
+        .route("/archives", get(list_archives).post(create_archive))
+        .route("/archives/dates", get(list_archivable_dates))
+        .route("/archives/selected", post(create_archive_selected))
+        .route(
+            "/archives/{name}",
+            get(download_archive).delete(delete_archive),
+        )
         // 增加请求体大小限制（10MB，适应较大的图片上传）
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024));
 
@@ -1122,5 +1130,152 @@ async fn search_lexicon(
             Json(result).into_response()
         }
         None => (StatusCode::NOT_FOUND, "lexicon not loaded").into_response(),
+    }
+}
+
+// ============== Archive API ==============
+
+/// 列出所有归档文件
+async fn list_archives(State(state): State<AppState>) -> impl IntoResponse {
+    let gallery_dir = state.gallery_dir.clone();
+    let storage = Arc::clone(&state.storage);
+    match tokio::task::spawn_blocking(move || {
+        let manager = ArchiveManager::new(&gallery_dir, &storage);
+        manager.list_archives()
+    })
+    .await
+    {
+        Ok(Ok(archives)) => Json(archives).into_response(),
+        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+/// 列出所有可归档的日期
+async fn list_archivable_dates(State(state): State<AppState>) -> impl IntoResponse {
+    let gallery_dir = state.gallery_dir.clone();
+    let storage = Arc::clone(&state.storage);
+    match tokio::task::spawn_blocking(move || {
+        let manager = ArchiveManager::new(&gallery_dir, &storage);
+        manager.list_archivable_dates()
+    })
+    .await
+    {
+        Ok(Ok(dates)) => Json(dates).into_response(),
+        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+/// 创建归档：归档所有今天之前的日期
+async fn create_archive(State(state): State<AppState>) -> impl IntoResponse {
+    let gallery_dir = state.gallery_dir.clone();
+    let storage = Arc::clone(&state.storage);
+    match tokio::task::spawn_blocking(move || {
+        let manager = ArchiveManager::new(&gallery_dir, &storage);
+        manager.create_archives()
+    })
+    .await
+    {
+        Ok(Ok(result)) => Json(result).into_response(),
+        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateArchiveSelectedRequest {
+    dates: Vec<String>,
+}
+
+/// 创建归档：仅归档选定的日期
+async fn create_archive_selected(
+    State(state): State<AppState>,
+    Json(req): Json<CreateArchiveSelectedRequest>,
+) -> impl IntoResponse {
+    let gallery_dir = state.gallery_dir.clone();
+    let storage = Arc::clone(&state.storage);
+    let dates = req.dates;
+    match tokio::task::spawn_blocking(move || {
+        let manager = ArchiveManager::new(&gallery_dir, &storage);
+        manager.create_archives_for_dates(&dates)
+    })
+    .await
+    {
+        Ok(Ok(result)) => Json(result).into_response(),
+        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+/// 下载归档文件
+async fn download_archive(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    use axum::body::Body;
+    use axum::http::header;
+    use tokio_util::io::ReaderStream;
+
+    let gallery_dir = state.gallery_dir.clone();
+    let storage = Arc::clone(&state.storage);
+    let manager = ArchiveManager::new(&gallery_dir, &storage);
+
+    let archive_path = match manager.get_archive_path(&name) {
+        Ok(path) => path,
+        Err(err) => {
+            let status = if err.to_string().contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            return (status, err.to_string()).into_response();
+        }
+    };
+
+    match tokio::fs::File::open(&archive_path).await {
+        Ok(file) => {
+            let stream = ReaderStream::new(file);
+            let body = Body::from_stream(stream);
+
+            let headers = [
+                (header::CONTENT_TYPE, "application/zip".to_string()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{}\"", name),
+                ),
+            ];
+
+            (headers, body).into_response()
+        }
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+/// 删除归档文件
+async fn delete_archive(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let gallery_dir = state.gallery_dir.clone();
+    let storage = Arc::clone(&state.storage);
+
+    match tokio::task::spawn_blocking(move || {
+        let manager = ArchiveManager::new(&gallery_dir, &storage);
+        manager.delete_archive(&name)
+    })
+    .await
+    {
+        Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(false)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(err)) => {
+            let status = if err.to_string().contains("invalid") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, err.to_string()).into_response()
+        }
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
 }
