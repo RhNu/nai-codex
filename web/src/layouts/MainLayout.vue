@@ -109,7 +109,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <q-layout view="lHh lpr lFf" class="main-layout">
+  <q-layout view="hHh LpR fFf" class="main-layout">
     <q-header elevated class="bg-primary text-white">
       <q-toolbar>
         <q-btn
