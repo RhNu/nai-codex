@@ -70,6 +70,14 @@ impl Snippet {
     }
 }
 
+/// Snippet 重命名结果，包含更新统计
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameSnippetResult {
+    pub snippet: Snippet,
+    pub updated_presets: usize,
+    pub updated_settings: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CharacterPreset {
     pub id: Uuid,
@@ -389,8 +397,8 @@ impl CoreStorage {
         Ok(snippet)
     }
 
-    /// 重命名 snippet
-    pub fn rename_snippet(&self, id: Uuid, new_name: String) -> CoreResult<Snippet> {
+    /// 重命名 snippet，并更新所有引用该 snippet 的 preset 和 LastGenerationSettings
+    pub fn rename_snippet(&self, id: Uuid, new_name: String) -> CoreResult<RenameSnippetResult> {
         validate_snippet_name(&new_name)?;
 
         let mut snippet = self
@@ -398,6 +406,16 @@ impl CoreStorage {
             .ok_or_else(|| anyhow!("snippet not found"))?;
 
         let old_name = snippet.name.clone();
+
+        // 如果名称没变，直接返回
+        if old_name == new_name {
+            return Ok(RenameSnippetResult {
+                snippet,
+                updated_presets: 0,
+                updated_settings: false,
+            });
+        }
+
         snippet.name = new_name.clone();
         snippet.updated_at = Utc::now();
 
@@ -422,7 +440,128 @@ impl CoreStorage {
         }
         write_txn.commit()?;
         info!(id=%snippet.id, old_name=%old_name, new_name=%new_name, "snippet renamed");
-        Ok(snippet)
+
+        // 更新所有引用该 snippet 的 preset 和 settings
+        let (updated_presets, updated_settings) =
+            self.update_snippet_references(&old_name, &new_name)?;
+
+        info!(
+            old_name=%old_name,
+            new_name=%new_name,
+            updated_presets=%updated_presets,
+            updated_settings=%updated_settings,
+            "snippet references updated"
+        );
+
+        Ok(RenameSnippetResult {
+            snippet,
+            updated_presets,
+            updated_settings,
+        })
+    }
+
+    /// 更新所有引用旧 snippet 名称的地方
+    fn update_snippet_references(
+        &self,
+        old_name: &str,
+        new_name: &str,
+    ) -> CoreResult<(usize, bool)> {
+        let old_tag = format!("<snippet:{}>", old_name);
+        let new_tag = format!("<snippet:{}>", new_name);
+
+        // 更新所有 presets
+        let mut updated_presets = 0;
+        let presets = {
+            let read_txn = self.db.begin_read()?;
+            let table = read_txn.open_table(TABLE_PRESETS)?;
+            let mut list = Vec::new();
+            for entry in table.iter()? {
+                let (_, value) = entry?;
+                let preset: CharacterPreset = serde_json::from_str(&value.value())?;
+                list.push(preset);
+            }
+            list
+        };
+
+        for mut preset in presets {
+            let mut changed = false;
+
+            if let Some(ref mut before) = preset.before {
+                if before.contains(&old_tag) {
+                    *before = before.replace(&old_tag, &new_tag);
+                    changed = true;
+                }
+            }
+            if let Some(ref mut after) = preset.after {
+                if after.contains(&old_tag) {
+                    *after = after.replace(&old_tag, &new_tag);
+                    changed = true;
+                }
+            }
+            if let Some(ref mut replace) = preset.replace {
+                if replace.contains(&old_tag) {
+                    *replace = replace.replace(&old_tag, &new_tag);
+                    changed = true;
+                }
+            }
+            if let Some(ref mut uc_before) = preset.uc_before {
+                if uc_before.contains(&old_tag) {
+                    *uc_before = uc_before.replace(&old_tag, &new_tag);
+                    changed = true;
+                }
+            }
+            if let Some(ref mut uc_after) = preset.uc_after {
+                if uc_after.contains(&old_tag) {
+                    *uc_after = uc_after.replace(&old_tag, &new_tag);
+                    changed = true;
+                }
+            }
+            if let Some(ref mut uc_replace) = preset.uc_replace {
+                if uc_replace.contains(&old_tag) {
+                    *uc_replace = uc_replace.replace(&old_tag, &new_tag);
+                    changed = true;
+                }
+            }
+
+            if changed {
+                preset.updated_at = Utc::now();
+                self.upsert_preset(preset)?;
+                updated_presets += 1;
+            }
+        }
+
+        // 更新 LastGenerationSettings
+        let mut updated_settings = false;
+        if let Some(mut settings) = self.load_last_generation_settings()? {
+            let mut changed = false;
+
+            if settings.prompt.contains(&old_tag) {
+                settings.prompt = settings.prompt.replace(&old_tag, &new_tag);
+                changed = true;
+            }
+            if settings.negative_prompt.contains(&old_tag) {
+                settings.negative_prompt = settings.negative_prompt.replace(&old_tag, &new_tag);
+                changed = true;
+            }
+
+            for slot in &mut settings.character_slots {
+                if slot.prompt.contains(&old_tag) {
+                    slot.prompt = slot.prompt.replace(&old_tag, &new_tag);
+                    changed = true;
+                }
+                if slot.uc.contains(&old_tag) {
+                    slot.uc = slot.uc.replace(&old_tag, &new_tag);
+                    changed = true;
+                }
+            }
+
+            if changed {
+                self.save_last_generation_settings(&settings)?;
+                updated_settings = true;
+            }
+        }
+
+        Ok((updated_presets, updated_settings))
     }
 
     pub fn get_snippet_by_name(&self, name: &str) -> CoreResult<Option<Snippet>> {

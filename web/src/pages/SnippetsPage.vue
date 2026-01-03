@@ -9,6 +9,7 @@ import {
   fetchSnippet,
   deleteSnippet,
   deleteSnippetPreview,
+  renameSnippet,
   type SnippetSummary,
   previewsBase,
 } from 'src/services/api';
@@ -28,6 +29,7 @@ const deleting = ref(false);
 
 const openDialog = ref(false);
 const editingId = ref<string | null>(null);
+const originalName = ref<string>(''); // 保存编辑时的原始名称
 const editLoading = ref(false);
 const form = ref({
   name: '',
@@ -111,6 +113,7 @@ async function load() {
 
 function openCreate() {
   editingId.value = null;
+  originalName.value = '';
   form.value = {
     name: '',
     category: '',
@@ -128,6 +131,7 @@ async function openEdit(id: string) {
   try {
     const snippet = await fetchSnippet(id);
     editingId.value = id;
+    originalName.value = snippet.name; // 保存原始名称
     form.value = {
       name: snippet.name,
       category: snippet.category,
@@ -165,6 +169,33 @@ async function save() {
 
     if (editingId.value) {
       // 更新
+      const newName = form.value.name.trim();
+      const isRenamed = originalName.value && originalName.value !== newName;
+
+      // 如果名称变了，先调用 rename API
+      if (isRenamed) {
+        const renameResult = await renameSnippet(editingId.value, newName);
+
+        // 构建更新消息
+        const messages: string[] = ['已重命名'];
+        if (renameResult.updated_presets > 0 || renameResult.updated_settings) {
+          const parts: string[] = [];
+          if (renameResult.updated_presets > 0) {
+            parts.push(`${renameResult.updated_presets} 个角色预设`);
+          }
+          if (renameResult.updated_settings) {
+            parts.push('生成页设置');
+          }
+          messages.push(`已更新 ${parts.join(' 和 ')} 中的引用`);
+        }
+        notify({
+          type: 'positive',
+          message: messages.join('，'),
+          timeout: renameResult.updated_presets > 0 || renameResult.updated_settings ? 5000 : 2000,
+        });
+      }
+
+      // 更新其他字段（排除 name，因为已经通过 rename 更新了）
       const payload: {
         name?: string;
         category?: string;
@@ -173,16 +204,21 @@ async function save() {
         tags?: string[];
         preview_base64?: string;
       } = {
-        name: form.value.name,
         category: form.value.category || '默认',
         content: form.value.content,
       };
+      // 如果没有重命名，也要更新 name
+      if (!isRenamed) {
+        payload.name = newName;
+      }
       if (form.value.description) payload.description = form.value.description;
       if (parsedTags.length > 0) payload.tags = parsedTags;
       if (base64Data.value) payload.preview_base64 = base64Data.value;
 
       await updateSnippet(editingId.value, payload);
-      notify({ type: 'positive', message: '已更新' });
+      if (!isRenamed) {
+        notify({ type: 'positive', message: '已更新' });
+      }
     } else {
       // 新建
       const payload: {

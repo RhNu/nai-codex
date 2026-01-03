@@ -200,6 +200,18 @@ export async function deleteSnippet(id: string) {
   await api.delete(`/snippets/${id}`);
 }
 
+// Snippet 重命名结果
+export type RenameSnippetResult = {
+  snippet: Snippet;
+  updated_presets: number;
+  updated_settings: boolean;
+};
+
+export async function renameSnippet(id: string, name: string) {
+  const { data } = await api.put<RenameSnippetResult>(`/snippets/${id}/rename`, { name });
+  return data;
+}
+
 // ============== Presets ==============
 
 export async function fetchPresets(params: { offset?: number; limit?: number } = {}) {
