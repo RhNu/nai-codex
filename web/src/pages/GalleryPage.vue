@@ -91,7 +91,7 @@ const allSortedDates = computed(() => {
     // 解析日期字符串进行比较（处理 "今天"、"昨天" 等特殊格式）
     const getDateFromLabel = (label: string) => {
       const match = label.match(/\((\d{4}\/\d{2}\/\d{2})\)/);
-      if (match) return new Date(match[1]);
+      if (match && match[1]) return new Date(match[1]);
       return new Date(label);
     };
     return getDateFromLabel(b).getTime() - getDateFromLabel(a).getTime();
@@ -287,7 +287,7 @@ watch(
   allSortedDates,
   (dates) => {
     if (dates.length > 0 && !selectedDateTab.value) {
-      selectedDateTab.value = dates[0];
+      selectedDateTab.value = dates[0] ?? null;
     }
   },
   { immediate: true },
