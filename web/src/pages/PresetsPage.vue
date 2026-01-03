@@ -71,7 +71,7 @@ useEventListener('paste', (event: ClipboardEvent) => {
   // 避免在输入框中粘贴时触发
   const target = event.target as HTMLElement;
   if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
-  handlePaste(event);
+  void handlePaste(event);
 });
 
 // 预览大图对话框

@@ -62,7 +62,7 @@ useEventListener('paste', (event: ClipboardEvent) => {
   // 避免在输入框中粘贴时触发
   const target = event.target as HTMLElement;
   if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
-  handlePaste(event);
+  void handlePaste(event);
 });
 
 // 预览大图对话框
@@ -650,7 +650,7 @@ watch(page, () => {
           <q-btn dense flat icon="close" v-close-popup />
         </q-bar>
         <q-card-section class="flex flex-center q-pa-none full-preview-content">
-          <q-img :src="currentPreviewUrl" fit="contain" class="full-preview-image" />
+          <q-img :src="currentPreviewUrl ?? undefined" fit="contain" class="full-preview-image" />
         </q-card-section>
       </q-card>
     </q-dialog>
