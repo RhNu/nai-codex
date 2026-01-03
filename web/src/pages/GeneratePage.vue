@@ -6,11 +6,16 @@ import { useTaskStore } from 'src/stores/tasks';
 import {
   fetchPresets,
   fetchPreset,
+  fetchMainPresets,
   loadGenerationSettings,
   saveGenerationSettings,
+  dryRunPrompt,
   type CharacterPrompt,
   type GenerationParams,
   type Preset,
+  type MainPreset,
+  type MainPresetSettings,
+  type DryRunResult,
 } from 'src/services/api';
 import { parseImageMetadata, type ParsedMetadata } from 'src/composables';
 import PromptEditor from 'src/components/PromptEditor.vue';
@@ -136,6 +141,37 @@ const presetOptionsWithNone = computed(() => [
   ...presetOptions.value,
 ]);
 
+// 主预设选项和状态
+const mainPresetOptions = ref<Array<{ label: string; value: string }>>([]);
+const mainPresetsCache = ref<Map<string, MainPreset>>(new Map());
+const selectedMainPresetId = ref<string | null>(null);
+const mainPresetsLoading = ref(false);
+
+const mainPresetOptionsWithNone = computed(() => [
+  { label: '无预设', value: null },
+  ...mainPresetOptions.value,
+]);
+
+// 当前选中的主预设（用于 dry-run）
+const currentMainPresetSettings = computed((): MainPresetSettings => {
+  if (!selectedMainPresetId.value) return {};
+  const preset = mainPresetsCache.value.get(selectedMainPresetId.value);
+  if (!preset) return {};
+  return {
+    before: preset.before ?? null,
+    after: preset.after ?? null,
+    replace: preset.replace ?? null,
+    uc_before: preset.uc_before ?? null,
+    uc_after: preset.uc_after ?? null,
+    uc_replace: preset.uc_replace ?? null,
+  };
+});
+
+// Dry-run 对话框
+const showDryRunDialog = ref(false);
+const dryRunResult = ref<DryRunResult | null>(null);
+const dryRunLoading = ref(false);
+
 const $q = useQuasar();
 const taskStore = useTaskStore();
 const loading = ref(false);
@@ -165,6 +201,34 @@ watch([width, height], ([w, h]) => {
     sizePreset.value = 'custom';
   }
 });
+
+// 主预设是否有选择
+const hasMainPreset = computed(() => !!selectedMainPresetId.value);
+
+// 执行 Dry-run
+async function executeDryRun() {
+  dryRunLoading.value = true;
+  try {
+    const result = await dryRunPrompt({
+      raw_positive: prompt.value,
+      raw_negative: negative.value,
+      main_preset: currentMainPresetSettings.value,
+      character_slots: characterSlots.value.map((s) => ({
+        prompt: s.prompt,
+        uc: s.uc,
+        enabled: s.enabled,
+        preset_id: s.preset_id,
+      })),
+    });
+    dryRunResult.value = result;
+    showDryRunDialog.value = true;
+  } catch (err) {
+    console.error('Dry-run failed:', err);
+    $q.notify({ type: 'negative', message: 'Dry-run 失败' });
+  } finally {
+    dryRunLoading.value = false;
+  }
+}
 
 function addCharacterSlot() {
   if (characterSlots.value.length < 6) {
@@ -438,6 +502,22 @@ async function loadPresets() {
   }
 }
 
+async function loadMainPresets() {
+  mainPresetsLoading.value = true;
+  try {
+    const res = await fetchMainPresets({ limit: 50, offset: 0 });
+    mainPresetOptions.value = res.items.map((p) => ({ label: p.name, value: p.id }));
+    // 缓存所有主预设
+    for (const p of res.items) {
+      mainPresetsCache.value.set(p.id, p);
+    }
+  } catch (err) {
+    console.error(err);
+  } finally {
+    mainPresetsLoading.value = false;
+  }
+}
+
 // 收集当前设置用于保存
 function collectCurrentSettings() {
   const params: GenerationParams = {
@@ -465,6 +545,7 @@ function collectCurrentSettings() {
       enabled: s.enabled,
       preset_id: s.preset_id,
     })),
+    main_preset_id: selectedMainPresetId.value,
   };
 }
 
@@ -480,6 +561,7 @@ function applySettings(settings: {
     enabled: boolean;
     preset_id: string | null;
   }>;
+  main_preset_id?: string | null;
 }) {
   prompt.value = settings.prompt || '';
   negative.value = settings.negative_prompt || '';
@@ -511,6 +593,9 @@ function applySettings(settings: {
   } else {
     characterSlots.value = [];
   }
+
+  // 恢复主预设ID
+  selectedMainPresetId.value = settings.main_preset_id || null;
 }
 
 // 保存当前设置到后端（防抖）
@@ -539,6 +624,7 @@ watch(
     ucPreset,
     varietyPlus,
     characterSlots,
+    selectedMainPresetId,
   ],
   () => {
     void debouncedSaveSettings();
@@ -583,7 +669,8 @@ async function submit() {
       negative_prompt: negative.value,
       count: count.value,
       params,
-      preset_id: null,
+      // 主提示词预设由后端处理
+      main_preset: currentMainPresetSettings.value,
       title: prompt.value.slice(0, 32) || '任务',
     });
     $q.notify({ type: 'positive', message: '任务已提交' });
@@ -604,6 +691,7 @@ async function submit() {
 
 onMounted(() => {
   void loadPresets();
+  void loadMainPresets();
 
   // 加载上次的设置
   void loadGenerationSettings()
@@ -936,6 +1024,32 @@ onUnmounted(() => {
       </q-card-section>
 
       <q-card-actions align="right" class="q-px-md q-pb-md">
+        <q-select
+          v-model="selectedMainPresetId"
+          :options="mainPresetOptionsWithNone"
+          label="主预设"
+          emit-value
+          map-options
+          dense
+          filled
+          clearable
+          style="min-width: 180px"
+          :loading="mainPresetsLoading"
+        >
+          <template #prepend>
+            <q-icon name="tune" :color="hasMainPreset ? 'primary' : 'grey'" />
+          </template>
+        </q-select>
+        <q-btn
+          flat
+          color="info"
+          label="预览"
+          icon="visibility"
+          :loading="dryRunLoading"
+          @click="executeDryRun"
+        >
+          <q-tooltip>预览最终提示词 (Dry-run)</q-tooltip>
+        </q-btn>
         <q-btn
           color="primary"
           label="提交任务"
@@ -1093,6 +1207,104 @@ onUnmounted(() => {
     <q-inner-loading :showing="importLoading">
       <q-spinner-gears size="3rem" color="primary" />
     </q-inner-loading>
+
+    <!-- Dry-run 结果对话框 -->
+    <q-dialog v-model="showDryRunDialog" maximized>
+      <q-card class="dry-run-dialog">
+        <q-card-section class="row items-center q-pb-sm">
+          <div class="text-h6">提示词预览 (Dry-run)</div>
+          <q-space />
+          <q-btn flat round dense icon="close" v-close-popup />
+        </q-card-section>
+
+        <q-separator />
+
+        <q-card-section v-if="dryRunResult" class="dry-run-content q-pa-md">
+          <!-- 正面提示词处理链 -->
+          <div class="text-subtitle1 q-mb-sm">
+            <q-icon name="add_circle" color="positive" class="q-mr-xs" />
+            正面提示词处理链
+          </div>
+
+          <div class="process-chain q-mb-md">
+            <div class="chain-step">
+              <div class="step-label">原始输入</div>
+              <div class="step-content">{{ dryRunResult.raw_positive || '(空)' }}</div>
+            </div>
+            <q-icon name="arrow_downward" color="grey" class="chain-arrow" />
+            <div class="chain-step" v-if="hasMainPreset">
+              <div class="step-label">应用主预设后</div>
+              <div class="step-content">{{ dryRunResult.positive_after_preset || '(空)' }}</div>
+            </div>
+            <q-icon v-if="hasMainPreset" name="arrow_downward" color="grey" class="chain-arrow" />
+            <div class="chain-step final">
+              <div class="step-label">最终结果 (Snippet 展开后)</div>
+              <div class="step-content">{{ dryRunResult.final_positive || '(空)' }}</div>
+            </div>
+          </div>
+
+          <q-separator class="q-my-md" />
+
+          <!-- 负面提示词处理链 -->
+          <div class="text-subtitle1 q-mb-sm">
+            <q-icon name="remove_circle" color="negative" class="q-mr-xs" />
+            负面提示词处理链
+          </div>
+
+          <div class="process-chain q-mb-md">
+            <div class="chain-step">
+              <div class="step-label">原始输入</div>
+              <div class="step-content negative">{{ dryRunResult.raw_negative || '(空)' }}</div>
+            </div>
+            <q-icon name="arrow_downward" color="grey" class="chain-arrow" />
+            <div class="chain-step" v-if="hasMainPreset">
+              <div class="step-label">应用主预设后</div>
+              <div class="step-content negative">
+                {{ dryRunResult.negative_after_preset || '(空)' }}
+              </div>
+            </div>
+            <q-icon v-if="hasMainPreset" name="arrow_downward" color="grey" class="chain-arrow" />
+            <div class="chain-step final">
+              <div class="step-label">最终结果 (Snippet 展开后)</div>
+              <div class="step-content negative">{{ dryRunResult.final_negative || '(空)' }}</div>
+            </div>
+          </div>
+
+          <!-- 角色提示词 -->
+          <template v-if="dryRunResult.character_prompts?.length">
+            <q-separator class="q-my-md" />
+            <div class="text-subtitle1 q-mb-sm">
+              <q-icon name="people" color="info" class="q-mr-xs" />
+              角色提示词 ({{ dryRunResult.character_prompts.length }} 个)
+            </div>
+
+            <div
+              v-for="(char, idx) in dryRunResult.character_prompts"
+              :key="idx"
+              class="character-result q-mb-md"
+            >
+              <div class="text-caption text-weight-medium q-mb-xs">角色 {{ idx + 1 }}</div>
+              <div class="row q-col-gutter-sm">
+                <div class="col-12 col-md-6">
+                  <div class="step-label">正面提示词</div>
+                  <div class="step-content">{{ char.final_prompt || '(空)' }}</div>
+                </div>
+                <div class="col-12 col-md-6">
+                  <div class="step-label">负面提示词</div>
+                  <div class="step-content negative">{{ char.final_uc || '(空)' }}</div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </q-card-section>
+
+        <q-separator />
+
+        <q-card-actions align="right" class="q-pa-md">
+          <q-btn flat label="关闭" v-close-popup />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </q-page>
 </template>
 
@@ -1175,5 +1387,66 @@ onUnmounted(() => {
   &.negative {
     border-left-color: var(--q-negative);
   }
+}
+
+// Dry-run 对话框样式
+.dry-run-dialog {
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.dry-run-content {
+  max-height: calc(100vh - 150px);
+  overflow-y: auto;
+}
+
+.process-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chain-step {
+  background: var(--q-grey-2);
+  border-radius: 8px;
+  padding: 12px;
+
+  &.final {
+    background: rgba(var(--q-primary-rgb), 0.1);
+    border: 1px solid var(--q-primary);
+  }
+}
+
+.step-label {
+  font-size: 0.75rem;
+  color: var(--q-grey-7);
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
+.step-content {
+  font-family: 'Maple Mono', monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-left: 3px solid var(--q-positive);
+  padding-left: 8px;
+
+  &.negative {
+    border-left-color: var(--q-negative);
+  }
+}
+
+.chain-arrow {
+  align-self: center;
+  opacity: 0.5;
+}
+
+.character-result {
+  background: var(--q-grey-1);
+  border-radius: 8px;
+  padding: 12px;
 }
 </style>

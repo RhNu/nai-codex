@@ -5,6 +5,7 @@ import {
   fetchTaskStatus,
   submitTask,
   type GenerationParams,
+  type MainPresetSettings,
   type TaskStatus,
 } from 'src/services/api';
 
@@ -40,14 +41,14 @@ export const useTaskStore = defineStore('tasks', {
       count: number;
       title?: string;
       params?: GenerationParams;
-      preset_id?: string | null;
+      main_preset?: MainPresetSettings;
     }) {
       const id = await submitTask({
         raw_prompt: payload.raw_prompt,
         negative_prompt: payload.negative_prompt,
         count: payload.count,
         ...(payload.params && { params: payload.params }),
-        ...(payload.preset_id && { preset_id: payload.preset_id }),
+        ...(payload.main_preset && { main_preset: payload.main_preset }),
       });
       this.items.unshift({
         id,

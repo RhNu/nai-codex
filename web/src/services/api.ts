@@ -33,12 +33,25 @@ export type GenerationParams = {
   variety_plus?: boolean;
 };
 
+// 主提示词预设设置
+export type MainPresetSettings = {
+  before?: string | null;
+  after?: string | null;
+  replace?: string | null;
+  uc_before?: string | null;
+  uc_after?: string | null;
+  uc_replace?: string | null;
+};
+
 export type TaskSubmitPayload = {
   raw_prompt: string;
   negative_prompt: string;
   count?: number;
   params?: GenerationParams;
+  /** @deprecated 已废弃，改用 main_preset */
   preset_id?: string | null;
+  // 主提示词预设设置
+  main_preset?: MainPresetSettings;
 };
 
 export type TaskStatus =
@@ -101,6 +114,27 @@ export type PresetSummary = {
   name: string;
   description?: string | null;
   preview_path?: string | null;
+};
+
+// 主预设类型
+export type MainPreset = {
+  id: string;
+  name: string;
+  description?: string | null;
+  before?: string | null;
+  after?: string | null;
+  replace?: string | null;
+  uc_before?: string | null;
+  uc_after?: string | null;
+  uc_replace?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type MainPresetSummary = {
+  id: string;
+  name: string;
+  description?: string | null;
 };
 
 // ============== Health ==============
@@ -282,6 +316,53 @@ export async function deletePreset(id: string) {
   await api.delete(`/presets/${id}`);
 }
 
+// ============== Main Presets ==============
+
+export async function fetchMainPresets(params: { offset?: number; limit?: number } = {}) {
+  const { data } = await api.get<Page<MainPreset>>('/main-presets', { params });
+  return data;
+}
+
+export async function fetchMainPreset(id: string) {
+  const { data } = await api.get<MainPreset>(`/main-presets/${id}`);
+  return data;
+}
+
+export async function createMainPreset(payload: {
+  name: string;
+  description?: string;
+  before?: string;
+  after?: string;
+  replace?: string;
+  uc_before?: string;
+  uc_after?: string;
+  uc_replace?: string;
+}) {
+  const { data } = await api.post<MainPreset>('/main-presets', payload);
+  return data;
+}
+
+export async function updateMainPreset(
+  id: string,
+  payload: {
+    name?: string;
+    description?: string;
+    before?: string;
+    after?: string;
+    replace?: string;
+    uc_before?: string;
+    uc_after?: string;
+    uc_replace?: string;
+  },
+) {
+  const { data } = await api.put<MainPreset>(`/main-presets/${id}`, payload);
+  return data;
+}
+
+export async function deleteMainPreset(id: string) {
+  await api.delete(`/main-presets/${id}`);
+}
+
 // ============== Generation Settings ==============
 
 export type CharacterSlotSettings = {
@@ -297,6 +378,8 @@ export type LastGenerationSettings = {
   count: number;
   params: GenerationParams;
   character_slots?: CharacterSlotSettings[];
+  // 主预设ID（替代之前的内联设置）
+  main_preset_id?: string | null;
 };
 
 export async function loadGenerationSettings() {
@@ -341,6 +424,38 @@ export async function parsePrompt(prompt: string) {
 export async function formatPrompt(prompt: string) {
   const { data } = await api.post<{ formatted: string }>('/prompt/format', { prompt });
   return data.formatted;
+}
+
+// ============== Dry-Run API ==============
+
+export type ProcessedCharacterPrompt = {
+  after_preset: string;
+  final_prompt: string;
+  uc_after_preset: string;
+  final_uc: string;
+  enabled: boolean;
+};
+
+export type DryRunResult = {
+  raw_positive: string;
+  positive_after_preset: string;
+  final_positive: string;
+  raw_negative: string;
+  negative_after_preset: string;
+  final_negative: string;
+  character_prompts: ProcessedCharacterPrompt[];
+};
+
+export type DryRunPayload = {
+  raw_positive: string;
+  raw_negative: string;
+  main_preset?: MainPresetSettings;
+  character_slots?: CharacterSlotSettings[];
+};
+
+export async function dryRunPrompt(payload: DryRunPayload) {
+  const { data } = await api.post<DryRunResult>('/prompt/dry-run', payload);
+  return data;
 }
 
 // ============== Lexicon API ==============

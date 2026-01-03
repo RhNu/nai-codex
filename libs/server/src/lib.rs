@@ -11,9 +11,9 @@ use axum::{
 use base64::{self, Engine, prelude::BASE64_STANDARD};
 use codex_api::NaiClient;
 use codex_core::{
-    CharacterPreset, CoreStorage, GalleryPaths, GenerateTaskRequest, GenerationParams,
-    GenerationRecord, HighlightSpan, LastGenerationSettings, Lexicon, PromptParser, Snippet,
-    TaskExecutor,
+    CharacterPreset, CharacterSlotSettings, CoreStorage, GalleryPaths, GenerateTaskRequest,
+    GenerationParams, GenerationRecord, HighlightSpan, LastGenerationSettings, Lexicon, MainPreset,
+    MainPresetSettings, PromptParser, PromptProcessor, Snippet, TaskExecutor,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, mpsc};
@@ -94,12 +94,24 @@ pub async fn serve(cfg: ServerConfig) -> Result<()> {
             put(update_preset_preview).delete(delete_preset_preview),
         )
         .route("/presets/{id}/rename", put(rename_preset))
+        // 主预设 API
+        .route(
+            "/main-presets",
+            get(list_main_presets).post(create_main_preset),
+        )
+        .route(
+            "/main-presets/{id}",
+            get(get_main_preset)
+                .put(update_main_preset)
+                .delete(delete_main_preset),
+        )
         .route(
             "/settings/generation",
             get(get_generation_settings).put(save_generation_settings),
         )
         .route("/prompt/parse", post(parse_prompt))
         .route("/prompt/format", post(format_prompt))
+        .route("/prompt/dry-run", post(dry_run_prompt))
         // 词库 API
         .route("/lexicon", get(get_lexicon_index))
         .route("/lexicon/categories/{name}", get(get_lexicon_category))
@@ -153,8 +165,9 @@ struct CreateTaskPayload {
     count: u32,
     #[serde(default)]
     params: Option<GenerationParams>,
+    /// 主提示词预设设置
     #[serde(default)]
-    preset_id: Option<Uuid>,
+    main_preset: MainPresetSettings,
 }
 
 #[derive(Debug, Serialize)]
@@ -191,22 +204,12 @@ async fn create_task(
 ) -> impl IntoResponse {
     let mut task = GenerateTaskRequest::new(payload.raw_prompt, payload.negative_prompt);
     task.count = payload.count.max(1);
+    task.main_preset = payload.main_preset;
     if let Some(params) = payload.params {
         task.params = params;
     }
-    if let Some(preset_id) = payload.preset_id {
-        let storage = Arc::clone(&state.storage);
-        match tokio::task::spawn_blocking(move || storage.get_preset(preset_id)).await {
-            Ok(Ok(Some(preset))) => {
-                task.preset = Some(preset);
-            }
-            Ok(Ok(None)) => {}
-            Ok(Err(err)) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-            Err(err) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
-            }
-        }
-    }
+    // preset_id 已废弃，保留兼容性但不再使用
+    // 角色预设现在由前端构建 character_prompts 时直接处理
 
     let id = task.id;
     if let Err(err) = state.queue.submit(task).await {
@@ -737,6 +740,150 @@ async fn rename_preset(
     }
 }
 
+// ============== Main Presets ==============
+
+async fn list_main_presets(
+    State(state): State<AppState>,
+    Query(q): Query<PresetQuery>,
+) -> impl IntoResponse {
+    let storage = Arc::clone(&state.storage);
+    match tokio::task::spawn_blocking(move || storage.list_main_presets(q.offset, q.limit)).await {
+        Ok(Ok(page)) => Json(page).into_response(),
+        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateMainPresetPayload {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    before: Option<String>,
+    #[serde(default)]
+    after: Option<String>,
+    #[serde(default)]
+    replace: Option<String>,
+    #[serde(default)]
+    uc_before: Option<String>,
+    #[serde(default)]
+    uc_after: Option<String>,
+    #[serde(default)]
+    uc_replace: Option<String>,
+}
+
+async fn create_main_preset(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateMainPresetPayload>,
+) -> impl IntoResponse {
+    let mut preset = MainPreset::new(payload.name);
+    preset.description = payload.description;
+    preset.before = payload.before;
+    preset.after = payload.after;
+    preset.replace = payload.replace;
+    preset.uc_before = payload.uc_before;
+    preset.uc_after = payload.uc_after;
+    preset.uc_replace = payload.uc_replace;
+
+    let storage = Arc::clone(&state.storage);
+    match tokio::task::spawn_blocking(move || storage.upsert_main_preset(preset)).await {
+        Ok(Ok(saved)) => (StatusCode::CREATED, Json(saved)).into_response(),
+        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+async fn get_main_preset(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
+    let storage = Arc::clone(&state.storage);
+    match tokio::task::spawn_blocking(move || storage.get_main_preset(id)).await {
+        Ok(Ok(Some(preset))) => Json(preset).into_response(),
+        Ok(Ok(None)) => (StatusCode::NOT_FOUND, "main preset not found").into_response(),
+        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateMainPresetPayload {
+    name: Option<String>,
+    description: Option<String>,
+    before: Option<String>,
+    after: Option<String>,
+    replace: Option<String>,
+    uc_before: Option<String>,
+    uc_after: Option<String>,
+    uc_replace: Option<String>,
+}
+
+async fn update_main_preset(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<UpdateMainPresetPayload>,
+) -> impl IntoResponse {
+    let storage = Arc::clone(&state.storage);
+    let storage_for_get = Arc::clone(&storage);
+
+    // First get the existing preset
+    let existing = match tokio::task::spawn_blocking(move || storage_for_get.get_main_preset(id))
+        .await
+    {
+        Ok(Ok(Some(preset))) => preset,
+        Ok(Ok(None)) => return (StatusCode::NOT_FOUND, "main preset not found").into_response(),
+        Ok(Err(err)) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+        }
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+
+    // Update fields
+    let mut preset = existing;
+    if let Some(name) = payload.name {
+        preset.name = name;
+    }
+    if payload.description.is_some() {
+        preset.description = payload.description;
+    }
+    if payload.before.is_some() {
+        preset.before = payload.before;
+    }
+    if payload.after.is_some() {
+        preset.after = payload.after;
+    }
+    if payload.replace.is_some() {
+        preset.replace = payload.replace;
+    }
+    if payload.uc_before.is_some() {
+        preset.uc_before = payload.uc_before;
+    }
+    if payload.uc_after.is_some() {
+        preset.uc_after = payload.uc_after;
+    }
+    if payload.uc_replace.is_some() {
+        preset.uc_replace = payload.uc_replace;
+    }
+    preset.updated_at = chrono::Utc::now();
+
+    match tokio::task::spawn_blocking(move || storage.upsert_main_preset(preset)).await {
+        Ok(Ok(saved)) => Json(saved).into_response(),
+        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+async fn delete_main_preset(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let storage = Arc::clone(&state.storage);
+    match tokio::task::spawn_blocking(move || storage.delete_main_preset(id)).await {
+        Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(false)) => (StatusCode::NOT_FOUND, "main preset not found").into_response(),
+        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
 // ============== Generation Settings ==============
 
 async fn get_generation_settings(State(state): State<AppState>) -> impl IntoResponse {
@@ -892,6 +1039,40 @@ struct FormatPromptResponse {
 async fn format_prompt(Json(payload): Json<PromptPayload>) -> impl IntoResponse {
     let formatted = PromptParser::format(&payload.prompt);
     Json(FormatPromptResponse { formatted })
+}
+
+// Dry-run 请求负载
+#[derive(Debug, Deserialize)]
+struct DryRunPayload {
+    raw_positive: String,
+    raw_negative: String,
+    #[serde(default)]
+    main_preset: Option<MainPresetSettings>,
+    #[serde(default)]
+    character_slots: Vec<CharacterSlotSettings>,
+}
+
+/// 执行 dry-run，返回提示词处理链各阶段的结果
+async fn dry_run_prompt(
+    State(state): State<AppState>,
+    Json(payload): Json<DryRunPayload>,
+) -> impl IntoResponse {
+    let storage = Arc::clone(&state.storage);
+    match tokio::task::spawn_blocking(move || {
+        let processor = PromptProcessor::new(storage);
+        processor.dry_run(
+            &payload.raw_positive,
+            &payload.raw_negative,
+            &payload.main_preset.unwrap_or_default(),
+            &payload.character_slots,
+        )
+    })
+    .await
+    {
+        Ok(Ok(result)) => Json(result).into_response(),
+        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
 }
 
 // ============== Lexicon API ==============

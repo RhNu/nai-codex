@@ -45,7 +45,7 @@ const navItems = [
   { to: '/home', icon: 'home', label: '主页', caption: '总览与状态' },
   { to: '/generate', icon: 'brush', label: '图像生成', caption: '调用 NovelAI' },
   { to: '/snippets', icon: 'snippet_folder', label: 'Snippet 编辑', caption: '提示片段库' },
-  { to: '/presets', icon: 'person', label: '角色预设', caption: '角色提示词片段' },
+  { to: '/presets', icon: 'person', label: '预设', caption: '提示词预设' },
   { to: '/lexicon', icon: 'translate', label: '词库', caption: 'Tag分类检索' },
   { to: '/metadata', icon: 'image_search', label: '元数据解析', caption: '解析AI图片' },
   { to: '/gallery', icon: 'photo_library', label: '画廊', caption: '历史生成' },

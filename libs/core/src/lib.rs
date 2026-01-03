@@ -22,10 +22,14 @@ pub use lexicon::{
     SearchResult as LexiconSearchResult,
 };
 
+pub mod preset;
+pub use preset::{CharacterPreset, MainPreset, MainPresetSettings};
+
 const TABLE_SNIPPETS: TableDefinition<Uuid, String> = TableDefinition::new("snippets");
 const TABLE_SNIPPET_NAME_INDEX: TableDefinition<String, Uuid> =
     TableDefinition::new("snippets_by_name");
 const TABLE_PRESETS: TableDefinition<Uuid, String> = TableDefinition::new("character_presets");
+const TABLE_MAIN_PRESETS: TableDefinition<Uuid, String> = TableDefinition::new("main_presets");
 const TABLE_RECORDS: TableDefinition<Uuid, String> = TableDefinition::new("generation_records");
 const TABLE_SETTINGS: TableDefinition<&str, String> = TableDefinition::new("settings");
 const SETTINGS_KEY_LAST_GENERATION: &str = "last_generation";
@@ -76,99 +80,6 @@ pub struct RenameSnippetResult {
     pub snippet: Snippet,
     pub updated_presets: usize,
     pub updated_settings: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CharacterPreset {
-    pub id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    /// 预览图路径
-    #[serde(default)]
-    pub preview_path: Option<String>,
-    /// 正向提示词：添加到原提示词之前
-    pub before: Option<String>,
-    /// 正向提示词：添加到原提示词之后
-    pub after: Option<String>,
-    /// 正向提示词：完全替换原提示词
-    pub replace: Option<String>,
-    /// 负面提示词：添加到原UC之前
-    #[serde(default)]
-    pub uc_before: Option<String>,
-    /// 负面提示词：添加到原UC之后
-    #[serde(default)]
-    pub uc_after: Option<String>,
-    /// 负面提示词：完全替换原UC
-    #[serde(default)]
-    pub uc_replace: Option<String>,
-    pub created_at: chrono::DateTime<Utc>,
-    pub updated_at: chrono::DateTime<Utc>,
-}
-
-impl CharacterPreset {
-    pub fn new(name: String) -> Self {
-        let now = Utc::now();
-        Self {
-            id: Uuid::new_v4(),
-            name,
-            description: None,
-            preview_path: None,
-            before: None,
-            after: None,
-            replace: None,
-            uc_before: None,
-            uc_after: None,
-            uc_replace: None,
-            created_at: now,
-            updated_at: now,
-        }
-    }
-
-    /// Apply preset to negative prompt (UC).
-    pub fn apply_uc(&self, raw_uc: &str) -> String {
-        if let Some(replace) = &self.uc_replace {
-            return replace.clone();
-        }
-
-        let mut result = String::new();
-        if let Some(before) = &self.uc_before {
-            result.push_str(before);
-            if !result.ends_with(' ') && !result.ends_with(',') {
-                result.push_str(", ");
-            }
-        }
-        result.push_str(raw_uc);
-        if let Some(after) = &self.uc_after {
-            if !result.ends_with(' ') && !result.ends_with(',') {
-                result.push_str(", ");
-            }
-            result.push_str(after);
-        }
-        result
-    }
-
-    /// Apply preset to raw prompt before snippet expansion.
-    pub fn apply(&self, raw_prompt: &str) -> String {
-        if let Some(replace) = &self.replace {
-            return replace.clone();
-        }
-
-        let mut result = String::new();
-        if let Some(before) = &self.before {
-            result.push_str(before);
-            if !result.ends_with(' ') {
-                result.push(' ');
-            }
-        }
-        result.push_str(raw_prompt);
-        if let Some(after) = &self.after {
-            if !result.ends_with(' ') {
-                result.push(' ');
-            }
-            result.push_str(after);
-        }
-        result
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +161,9 @@ pub struct LastGenerationSettings {
     pub params: GenerationParams,
     #[serde(default)]
     pub character_slots: Vec<CharacterSlotSettings>,
+    /// 主提示词预设ID（替代之前的内联设置）
+    #[serde(default)]
+    pub main_preset_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,7 +174,11 @@ pub struct GenerateTaskRequest {
     /// How many images to generate sequentially.
     pub count: u32,
     pub params: GenerationParams,
+    /// 角色预设（应用于角色槽）
     pub preset: Option<CharacterPreset>,
+    /// 主提示词预设设置
+    #[serde(default)]
+    pub main_preset: MainPresetSettings,
 }
 
 impl GenerateTaskRequest {
@@ -272,6 +190,7 @@ impl GenerateTaskRequest {
             count: 1,
             params: GenerationParams::default(),
             preset: None,
+            main_preset: MainPresetSettings::default(),
         }
     }
 }
@@ -325,6 +244,7 @@ impl CoreStorage {
                 write_txn.open_table(TABLE_SNIPPETS)?;
                 write_txn.open_table(TABLE_SNIPPET_NAME_INDEX)?;
                 write_txn.open_table(TABLE_PRESETS)?;
+                write_txn.open_table(TABLE_MAIN_PRESETS)?;
                 write_txn.open_table(TABLE_RECORDS)?;
                 write_txn.open_table(TABLE_SETTINGS)?;
             }
@@ -960,6 +880,62 @@ impl CoreStorage {
         Ok(Page { items, total })
     }
 
+    // ==================== 主预设 CRUD ====================
+
+    /// 创建或更新主预设
+    pub fn upsert_main_preset(&self, preset: MainPreset) -> CoreResult<MainPreset> {
+        let serialized = serde_json::to_string(&preset)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(TABLE_MAIN_PRESETS)?;
+            table.insert(preset.id, serialized)?;
+        }
+        write_txn.commit()?;
+        info!(id=%preset.id, name=%preset.name, "main preset upserted");
+        Ok(preset)
+    }
+
+    /// 获取主预设
+    pub fn get_main_preset(&self, id: Uuid) -> CoreResult<Option<MainPreset>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(TABLE_MAIN_PRESETS)?;
+        if let Some(value) = table.get(id)? {
+            let preset: MainPreset = serde_json::from_str(&value.value())?;
+            return Ok(Some(preset));
+        }
+        Ok(None)
+    }
+
+    /// 删除主预设
+    pub fn delete_main_preset(&self, id: Uuid) -> CoreResult<bool> {
+        let write_txn = self.db.begin_write()?;
+        let removed = {
+            let mut table = write_txn.open_table(TABLE_MAIN_PRESETS)?;
+            table.remove(id)?.is_some()
+        };
+        write_txn.commit()?;
+        if removed {
+            info!(id=%id, "main preset deleted");
+        }
+        Ok(removed)
+    }
+
+    /// 列出所有主预设
+    pub fn list_main_presets(&self, offset: usize, limit: usize) -> CoreResult<Page<MainPreset>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(TABLE_MAIN_PRESETS)?;
+        let mut presets = Vec::new();
+        for entry in table.iter()? {
+            let (_, value) = entry?;
+            let preset: MainPreset = serde_json::from_str(&value.value())?;
+            presets.push(preset);
+        }
+        presets.sort_by(|a, b| a.name.cmp(&b.name));
+        let total = presets.len();
+        let items = presets.into_iter().skip(offset).take(limit).collect();
+        Ok(Page { items, total })
+    }
+
     /// 保存上次生成设置
     pub fn save_last_generation_settings(
         &self,
@@ -1034,6 +1010,145 @@ impl SnippetResolver {
     }
 }
 
+/// 角色提示词处理结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessedCharacterPrompt {
+    /// 预设应用后的正面提示词
+    pub after_preset: String,
+    /// snippet 展开后的最终正面提示词
+    pub final_prompt: String,
+    /// 预设应用后的负面提示词
+    pub uc_after_preset: String,
+    /// snippet 展开后的最终负面提示词
+    pub final_uc: String,
+    pub enabled: bool,
+}
+
+/// Dry-run 结果，展示提示词处理链的各个阶段
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DryRunResult {
+    /// 原始正面提示词
+    pub raw_positive: String,
+    /// 主预设应用后的正面提示词
+    pub positive_after_preset: String,
+    /// snippet 展开后的最终正面提示词
+    pub final_positive: String,
+    /// 原始负面提示词
+    pub raw_negative: String,
+    /// 主预设应用后的负面提示词
+    pub negative_after_preset: String,
+    /// snippet 展开后的最终负面提示词
+    pub final_negative: String,
+    /// 角色提示词处理结果
+    pub character_prompts: Vec<ProcessedCharacterPrompt>,
+}
+
+/// 提示词处理器 - 统一处理提示词预设注入和 snippet 展开
+///
+/// 处理链：
+/// 1. 应用主预设（before/after/replace）到主提示词
+/// 2. 应用角色预设到角色提示词
+/// 3. 展开所有 snippet 引用
+#[derive(Debug, Clone)]
+pub struct PromptProcessor {
+    storage: Arc<CoreStorage>,
+}
+
+impl PromptProcessor {
+    pub fn new(storage: Arc<CoreStorage>) -> Self {
+        Self { storage }
+    }
+
+    /// 执行 dry-run，返回处理链各阶段的结果
+    pub fn dry_run(
+        &self,
+        raw_positive: &str,
+        raw_negative: &str,
+        main_preset: &MainPresetSettings,
+        character_slots: &[CharacterSlotSettings],
+    ) -> CoreResult<DryRunResult> {
+        let resolver = SnippetResolver::new(Arc::clone(&self.storage));
+
+        // 步骤 1: 应用主预设
+        let positive_after_preset = main_preset.apply_positive(raw_positive);
+        let negative_after_preset = main_preset.apply_negative(raw_negative);
+
+        // 步骤 2: 展开 snippet
+        let final_positive = resolver.expand(&positive_after_preset)?;
+        let final_negative = resolver.expand(&negative_after_preset)?;
+
+        // 步骤 3: 处理角色提示词
+        let mut processed_chars = Vec::new();
+        for slot in character_slots {
+            if !slot.enabled {
+                continue;
+            }
+            if slot.prompt.trim().is_empty() && slot.preset_id.is_none() {
+                continue;
+            }
+
+            let mut char_positive = slot.prompt.clone();
+            let mut char_negative = slot.uc.clone();
+
+            // 应用角色预设
+            if let Some(preset_id) = slot.preset_id {
+                if let Some(preset) = self.storage.get_preset(preset_id)? {
+                    char_positive = preset.apply(&char_positive);
+                    char_negative = preset.apply_uc(&char_negative);
+                }
+            }
+
+            let after_preset = char_positive.clone();
+            let uc_after_preset = char_negative.clone();
+
+            // 展开 snippet
+            let final_char_prompt = resolver.expand(&char_positive)?;
+            let final_char_uc = resolver.expand(&char_negative)?;
+
+            processed_chars.push(ProcessedCharacterPrompt {
+                after_preset,
+                final_prompt: final_char_prompt,
+                uc_after_preset,
+                final_uc: final_char_uc,
+                enabled: true,
+            });
+        }
+
+        Ok(DryRunResult {
+            raw_positive: raw_positive.to_string(),
+            positive_after_preset,
+            final_positive,
+            raw_negative: raw_negative.to_string(),
+            negative_after_preset,
+            final_negative,
+            character_prompts: processed_chars,
+        })
+    }
+
+    /// 处理任务请求中的提示词，返回处理后的结果
+    pub fn process_task(&self, task: &mut GenerateTaskRequest) -> CoreResult<(String, String)> {
+        let resolver = SnippetResolver::new(Arc::clone(&self.storage));
+
+        // 步骤 1: 应用主预设
+        let positive_after_preset = task.main_preset.apply_positive(&task.raw_prompt);
+        let negative_after_preset = task.main_preset.apply_negative(&task.negative_prompt);
+
+        // 步骤 2: 展开主提示词中的 snippet
+        let final_positive = resolver.expand(&positive_after_preset)?;
+        let final_negative = resolver.expand(&negative_after_preset)?;
+
+        // 步骤 3: 处理角色提示词
+        if let Some(ref mut chars) = task.params.character_prompts {
+            for char_prompt in chars.iter_mut() {
+                char_prompt.prompt = resolver.expand(&char_prompt.prompt)?;
+                char_prompt.uc = resolver.expand(&char_prompt.uc)?;
+            }
+        }
+
+        Ok((final_positive, final_negative))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TaskExecutor {
     client: Arc<NaiClient>,
@@ -1053,21 +1168,28 @@ impl TaskExecutor {
     pub async fn execute(&self, mut task: GenerateTaskRequest) -> CoreResult<GenerationRecord> {
         info!(task_id=%task.id, count=task.count, "task started");
 
-        let storage_for_expand = Arc::clone(&self.storage);
-        let applied = if let Some(preset) = &task.preset {
-            preset.apply(&task.raw_prompt)
-        } else {
-            task.raw_prompt.clone()
-        };
-
-        // 同时展开主提示词和角色提示词中的 snippet
+        let storage_for_process = Arc::clone(&self.storage);
+        let main_preset = task.main_preset.clone();
+        let raw_prompt = task.raw_prompt.clone();
+        let raw_negative = task.negative_prompt.clone();
         let character_prompts = task.params.character_prompts.clone();
-        let (expanded_prompt, expanded_character_prompts) =
-            tokio::task::spawn_blocking(move || {
-                let resolver = SnippetResolver::new(storage_for_expand);
-                let main_prompt = resolver.expand(&applied)?;
 
-                // 展开角色提示词中的 snippet
+        // 使用 PromptProcessor 处理提示词
+        // 处理链：注入主预设 -> 展开 snippet
+        let (expanded_prompt, expanded_negative, expanded_character_prompts) =
+            tokio::task::spawn_blocking(move || {
+                let processor = PromptProcessor::new(storage_for_process);
+                let resolver = SnippetResolver::new(Arc::clone(&processor.storage));
+
+                // 步骤 1: 应用主预设
+                let positive_after_preset = main_preset.apply_positive(&raw_prompt);
+                let negative_after_preset = main_preset.apply_negative(&raw_negative);
+
+                // 步骤 2: 展开 snippet
+                let final_positive = resolver.expand(&positive_after_preset)?;
+                let final_negative = resolver.expand(&negative_after_preset)?;
+
+                // 步骤 3: 处理角色提示词
                 let expanded_chars = if let Some(chars) = character_prompts {
                     let mut result = Vec::with_capacity(chars.len());
                     for mut char_prompt in chars {
@@ -1080,7 +1202,7 @@ impl TaskExecutor {
                     None
                 };
 
-                Ok::<_, anyhow::Error>((main_prompt, expanded_chars))
+                Ok::<_, anyhow::Error>((final_positive, final_negative, expanded_chars))
             })
             .await
             .map_err(|e| anyhow!("join error: {e}"))??;
@@ -1096,7 +1218,7 @@ impl TaskExecutor {
         for idx in 0..task.count {
             let seed = base_seed.unwrap_or_else(random_seed);
             info!(task_id=%task.id, idx, seed, "generating image");
-            let req = to_nai_request(&task, &expanded_prompt, seed);
+            let req = to_nai_request(&task, &expanded_prompt, &expanded_negative, seed);
             let bytes = self.client.generate_image(&req).await?;
             let path = self.gallery.image_path(idx, seed);
 
@@ -1128,7 +1250,7 @@ impl TaskExecutor {
             created_at: Utc::now(),
             raw_prompt: task.raw_prompt,
             expanded_prompt,
-            negative_prompt: task.negative_prompt,
+            negative_prompt: expanded_negative,
             images,
         };
 
@@ -1142,11 +1264,16 @@ impl TaskExecutor {
     }
 }
 
-fn to_nai_request(task: &GenerateTaskRequest, prompt: &str, seed: u64) -> ImageGenerationRequest {
+fn to_nai_request(
+    task: &GenerateTaskRequest,
+    prompt: &str,
+    negative: &str,
+    seed: u64,
+) -> ImageGenerationRequest {
     ImageGenerationRequest {
         model: task.params.model,
         prompt_positive: prompt.to_string(),
-        prompt_negative: task.negative_prompt.clone(),
+        prompt_negative: negative.to_string(),
         quantity: None,
         width: task.params.width,
         height: task.params.height,
