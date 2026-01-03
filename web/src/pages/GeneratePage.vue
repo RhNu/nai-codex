@@ -165,7 +165,10 @@ async function buildCharacterPrompts(): Promise<CharacterPrompt[]> {
   const results: CharacterPrompt[] = [];
 
   for (const slot of characterSlots.value) {
-    if (!slot.enabled || !slot.prompt.trim()) continue;
+    // 如果未启用，跳过
+    if (!slot.enabled) continue;
+    // 如果没有输入提示词且没有预设，跳过
+    if (!slot.prompt.trim() && !slot.preset_id) continue;
 
     let finalPrompt = slot.prompt.trim();
     let finalUc = slot.uc.trim();
