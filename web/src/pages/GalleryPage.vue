@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useQuasar } from 'quasar';
 import { useClipboard } from '@vueuse/core';
 import { fetchRecentRecords, deleteRecordsBatch, type GenerationRecord } from 'src/services/api';
@@ -34,6 +34,16 @@ const selectedIds = ref<Set<string>>(new Set());
 const page = ref(1);
 const pageSize = ref(24);
 
+// 当前选中的日期 Tab
+const selectedDateTab = ref<string | null>(null);
+
+// 搜索变化时重置页码和日期Tab
+watch(search, () => {
+  page.value = 1;
+  // 重新选择第一个日期
+  selectedDateTab.value = allSortedDates.value[0] || null;
+});
+
 // filteredImages 需要先定义，供 useGalleryNavigation 使用
 const filteredImages = computed(() => {
   if (!search.value.trim()) return images.value;
@@ -62,36 +72,47 @@ const {
   },
 });
 
-// 按日期分组的图片
-const groupedImages = computed(() => {
-  const filtered = filteredImages.value;
+// 按日期分组所有过滤后的图片（用于生成 Tab）
+const allGroupedImages = computed(() => {
   const groups: Record<string, GalleryItem[]> = {};
-
-  for (const img of filtered) {
+  for (const img of filteredImages.value) {
     const date = formatDate(img.createdAt);
     if (!groups[date]) {
       groups[date] = [];
     }
     groups[date].push(img);
   }
-
   return groups;
 });
 
-const sortedDates = computed(() => {
-  return Object.keys(groupedImages.value).sort((a, b) => {
-    // 最新的日期在前
-    return new Date(b).getTime() - new Date(a).getTime();
+// 所有日期（排序后），用于 Tab 显示
+const allSortedDates = computed(() => {
+  return Object.keys(allGroupedImages.value).sort((a, b) => {
+    // 解析日期字符串进行比较（处理 "今天"、"昨天" 等特殊格式）
+    const getDateFromLabel = (label: string) => {
+      const match = label.match(/\((\d{4}\/\d{2}\/\d{2})\)/);
+      if (match) return new Date(match[1]);
+      return new Date(label);
+    };
+    return getDateFromLabel(b).getTime() - getDateFromLabel(a).getTime();
   });
 });
 
-// 获取某个日期下应该显示的图片
-function getImagesForDate(date: string): GalleryItem[] {
-  return groupedImages.value[date] || [];
-}
+// 当前选中日期的图片
+const currentDateImages = computed(() => {
+  if (!selectedDateTab.value) return [];
+  return allGroupedImages.value[selectedDateTab.value] || [];
+});
+
+// 当前日期的分页图片
+const paginatedImages = computed(() => {
+  const start = (page.value - 1) * pageSize.value;
+  const end = start + pageSize.value;
+  return currentDateImages.value.slice(start, end);
+});
 
 const totalPages = computed(() =>
-  Math.max(1, Math.ceil(filteredImages.value.length / pageSize.value)),
+  Math.max(1, Math.ceil(currentDateImages.value.length / pageSize.value)),
 );
 
 function formatDate(isoString: string): string {
@@ -256,6 +277,22 @@ async function downloadSelected() {
   }
 }
 
+// 切换日期 Tab 时重置页码
+watch(selectedDateTab, () => {
+  page.value = 1;
+});
+
+// 初始化选中第一个日期
+watch(
+  allSortedDates,
+  (dates) => {
+    if (dates.length > 0 && !selectedDateTab.value) {
+      selectedDateTab.value = dates[0];
+    }
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   void load();
 });
@@ -373,80 +410,82 @@ async function load() {
         </q-card-section>
       </q-card>
 
-      <!-- 按日期分组的图片列表 -->
-      <div class="gallery-content">
-        <template v-for="date in sortedDates" :key="date">
-          <div class="date-section">
-            <div class="date-header">
-              <q-icon name="calendar_today" size="sm" class="q-mr-sm" />
-              <span class="text-subtitle1">{{ date }}</span>
-              <q-badge :label="getImagesForDate(date).length" class="q-ml-sm" />
-            </div>
+      <!-- 日期 Tab 导航 -->
+      <q-tabs
+        v-model="selectedDateTab"
+        class="date-tabs q-mb-md"
+        align="left"
+        dense
+        narrow-indicator
+        active-color="primary"
+        indicator-color="primary"
+      >
+        <q-tab v-for="date in allSortedDates" :key="date" :name="date" :label="date" no-caps>
+          <q-badge floating color="primary" :label="allGroupedImages[date]?.length || 0" />
+        </q-tab>
+      </q-tabs>
 
-            <div class="image-grid">
-              <div v-for="img in getImagesForDate(date)" :key="img.id" class="image-item">
-                <q-card
-                  class="image-card cursor-pointer"
-                  :class="{ selected: selectMode && selectedIds.has(img.id) }"
-                  flat
-                  bordered
-                  @click="showImage(img)"
-                >
-                  <div class="image-wrapper">
-                    <q-img :src="img.url" :ratio="1" fit="cover" class="image-thumbnail">
-                      <template v-slot:loading>
-                        <div class="flex flex-center full-height">
-                          <q-spinner-gears color="primary" />
-                        </div>
-                      </template>
-                      <template v-slot:error>
-                        <div class="flex flex-center full-height bg-negative text-white">
-                          <q-icon name="broken_image" size="2rem" />
-                        </div>
-                      </template>
-                    </q-img>
-                    <div class="image-overlay" :class="{ 'select-mode': selectMode }">
-                      <div class="overlay-content">
-                        <q-icon
-                          v-if="selectMode"
-                          :name="
-                            selectedIds.has(img.id) ? 'check_circle' : 'radio_button_unchecked'
-                          "
-                          size="2rem"
-                        />
-                        <q-icon v-else name="zoom_in" size="1.5rem" />
-                      </div>
+      <!-- 当前日期的图片网格 -->
+      <div class="gallery-content">
+        <div class="image-grid">
+          <div v-for="img in paginatedImages" :key="img.id" class="image-item">
+            <q-card
+              class="image-card cursor-pointer"
+              :class="{ selected: selectMode && selectedIds.has(img.id) }"
+              flat
+              bordered
+              @click="showImage(img)"
+            >
+              <div class="image-wrapper">
+                <q-img :src="img.url" :ratio="1" fit="cover" class="image-thumbnail">
+                  <template v-slot:loading>
+                    <div class="flex flex-center full-height">
+                      <q-spinner-gears color="primary" />
                     </div>
-                    <!-- 选中指示器 -->
-                    <div v-if="selectMode && selectedIds.has(img.id)" class="selected-indicator">
-                      <q-icon name="check_circle" color="primary" size="1.5rem" />
+                  </template>
+                  <template v-slot:error>
+                    <div class="flex flex-center full-height bg-negative text-white">
+                      <q-icon name="broken_image" size="2rem" />
                     </div>
+                  </template>
+                </q-img>
+                <div class="image-overlay" :class="{ 'select-mode': selectMode }">
+                  <div class="overlay-content">
+                    <q-icon
+                      v-if="selectMode"
+                      :name="selectedIds.has(img.id) ? 'check_circle' : 'radio_button_unchecked'"
+                      size="2rem"
+                    />
+                    <q-icon v-else name="zoom_in" size="1.5rem" />
                   </div>
-                  <div class="image-info q-pa-xs">
-                    <div class="row items-center justify-between no-wrap">
-                      <span class="text-caption text-grey-7 ellipsis">Seed: {{ img.seed }}</span>
-                      <span class="text-caption text-grey-5">{{ formatTime(img.createdAt) }}</span>
-                    </div>
-                  </div>
-                </q-card>
+                </div>
+                <!-- 选中指示器 -->
+                <div v-if="selectMode && selectedIds.has(img.id)" class="selected-indicator">
+                  <q-icon name="check_circle" color="primary" size="1.5rem" />
+                </div>
               </div>
-            </div>
+              <div class="image-info q-pa-xs">
+                <div class="row items-center justify-between no-wrap">
+                  <span class="text-caption text-grey-7 ellipsis">Seed: {{ img.seed }}</span>
+                  <span class="text-caption text-grey-5">{{ formatTime(img.createdAt) }}</span>
+                </div>
+              </div>
+            </q-card>
           </div>
-        </template>
+        </div>
       </div>
 
       <!-- 分页 -->
-      <q-card class="q-mt-md" v-if="totalPages > 1">
-        <q-card-section class="row items-center justify-center">
-          <q-pagination
-            v-model="page"
-            :max="totalPages"
-            max-pages="7"
-            direction-links
-            boundary-links
-          />
-        </q-card-section>
-      </q-card>
+      <div class="row items-center justify-center q-mt-md q-gutter-md" v-if="totalPages > 1">
+        <q-pagination
+          v-model="page"
+          :max="totalPages"
+          max-pages="7"
+          direction-links
+          boundary-links
+        />
+        <span class="text-caption text-grey-6"> {{ currentDateImages.length }} 张图片 </span>
+      </div>
     </template>
 
     <!-- 图片预览对话框 -->
@@ -560,31 +599,25 @@ async function load() {
 .gallery-content {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 16px;
 }
 
-.date-section {
+.date-tabs {
   background: var(--q-dark-page, white);
   border-radius: 8px;
-  padding: 16px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+
+  :deep(.q-tab) {
+    padding-right: 24px;
+  }
 }
 
-.body--light .date-section {
+.body--light .date-tabs {
   background: white;
 }
 
-.body--dark .date-section {
+.body--dark .date-tabs {
   background: var(--q-dark);
-}
-
-.date-header {
-  display: flex;
-  align-items: center;
-  padding-bottom: 12px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-  color: var(--q-primary);
 }
 
 .image-grid {

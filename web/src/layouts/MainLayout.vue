@@ -109,7 +109,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <q-layout view="hHh lpR fFf">
+  <q-layout view="lHh lpr lFf" class="main-layout">
     <q-header elevated class="bg-primary text-white">
       <q-toolbar>
         <q-btn
@@ -188,25 +188,27 @@ onMounted(() => {
       </q-toolbar>
     </q-header>
 
-    <q-drawer v-model="leftDrawerOpen" show-if-above bordered>
-      <q-list padding>
-        <q-item
-          v-for="item in navItems"
-          :key="item.to"
-          clickable
-          tag="router-link"
-          :to="item.to"
-          active-class="text-primary"
-        >
-          <q-item-section avatar>
-            <q-icon :name="item.icon" />
-          </q-item-section>
-          <q-item-section>
-            <q-item-label>{{ item.label }}</q-item-label>
-            <q-item-label caption>{{ item.caption }}</q-item-label>
-          </q-item-section>
-        </q-item>
-      </q-list>
+    <q-drawer v-model="leftDrawerOpen" show-if-above bordered class="nav-drawer">
+      <q-scroll-area class="fit">
+        <q-list padding>
+          <q-item
+            v-for="item in navItems"
+            :key="item.to"
+            clickable
+            tag="router-link"
+            :to="item.to"
+            active-class="text-primary"
+          >
+            <q-item-section avatar>
+              <q-icon :name="item.icon" />
+            </q-item-section>
+            <q-item-section>
+              <q-item-label>{{ item.label }}</q-item-label>
+              <q-item-label caption>{{ item.caption }}</q-item-label>
+            </q-item-section>
+          </q-item>
+        </q-list>
+      </q-scroll-area>
     </q-drawer>
 
     <q-drawer v-model="taskDrawerOpen" side="right" bordered :width="360">
@@ -274,13 +276,33 @@ onMounted(() => {
       </q-scroll-area>
     </q-drawer>
 
-    <q-page-container>
-      <router-view />
+    <q-page-container class="page-container">
+      <q-scroll-area class="fit page-scroll-area">
+        <router-view />
+      </q-scroll-area>
     </q-page-container>
   </q-layout>
 </template>
 
 <style scoped lang="scss">
+.main-layout {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.page-container {
+  height: 100%;
+  overflow: hidden;
+}
+
+.page-scroll-area {
+  height: 100%;
+}
+
+.nav-drawer {
+  height: 100%;
+}
+
 .task-item {
   border-bottom: 1px solid rgba(0, 0, 0, 0.05);
   transition: background-color 0.2s;
