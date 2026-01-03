@@ -1,23 +1,44 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
+import { useQuasar } from 'quasar';
 import { useTaskStore, type TaskItem } from 'src/stores/tasks';
+import { useThemeStore, presetThemes } from 'src/stores/theme';
 import { useSettingsStore } from 'src/stores/settings';
+import { useNotificationPermission } from 'src/composables';
 
+const $q = useQuasar();
 const leftDrawerOpen = ref(true);
 const taskDrawerOpen = ref(false);
 
 const taskStore = useTaskStore();
+const themeStore = useThemeStore();
 const settingsStore = useSettingsStore();
 const tasks = computed(() => taskStore.items);
 
+// 通知权限
+const {
+  isSupported: notificationSupported,
+  permissionState,
+  requestPermission,
+} = useNotificationPermission();
+
+async function handleRequestNotification() {
+  const granted = await requestPermission();
+  if (granted) {
+    $q.notify({ type: 'positive', message: '已开启浏览器通知' });
+  } else {
+    $q.notify({ type: 'warning', message: '通知权限被拒绝' });
+  }
+}
+
 const darkModeIcon = computed(() => {
-  if (settingsStore.darkMode === 'auto') return 'brightness_auto';
-  return settingsStore.darkMode ? 'dark_mode' : 'light_mode';
+  if (themeStore.darkMode === 'auto') return 'brightness_auto';
+  return themeStore.darkMode ? 'dark_mode' : 'light_mode';
 });
 
 const darkModeTooltip = computed(() => {
-  if (settingsStore.darkMode === 'auto') return '跟随系统';
-  return settingsStore.darkMode ? '夜间模式' : '日间模式';
+  if (themeStore.darkMode === 'auto') return '跟随系统';
+  return themeStore.darkMode ? '夜间模式' : '日间模式';
 });
 
 const navItems = [
@@ -101,13 +122,58 @@ onMounted(() => {
         />
         <q-toolbar-title>NAI Codex</q-toolbar-title>
         <q-space />
+        <!-- 自动补全开关 -->
+        <q-btn
+          flat
+          dense
+          round
+          :icon="settingsStore.autocompleteEnabled ? 'auto_awesome' : 'auto_awesome_mosaic'"
+          :color="settingsStore.autocompleteEnabled ? 'white' : 'grey-4'"
+          aria-label="Toggle Autocomplete"
+          @click="settingsStore.toggleAutocomplete()"
+        >
+          <q-tooltip>{{
+            settingsStore.autocompleteEnabled ? '自动补全：开' : '自动补全：关'
+          }}</q-tooltip>
+        </q-btn>
+        <!-- 主题选择按钮 -->
+        <q-btn
+          flat
+          dense
+          round
+          :icon="themeStore.currentTheme?.icon || 'palette'"
+          aria-label="Theme"
+        >
+          <q-tooltip>切换主题</q-tooltip>
+          <q-menu anchor="bottom right" self="top right">
+            <q-list style="min-width: 180px">
+              <q-item-label header>选择主题</q-item-label>
+              <q-item
+                v-for="theme in presetThemes"
+                :key="theme.id"
+                clickable
+                v-close-popup
+                :active="themeStore.currentThemeId === theme.id"
+                @click="themeStore.setTheme(theme.id)"
+              >
+                <q-item-section avatar>
+                  <q-icon :name="theme.icon" :style="{ color: theme.colors.primary }" />
+                </q-item-section>
+                <q-item-section>{{ theme.name }}</q-item-section>
+                <q-item-section side v-if="themeStore.currentThemeId === theme.id">
+                  <q-icon name="check" color="primary" />
+                </q-item-section>
+              </q-item>
+            </q-list>
+          </q-menu>
+        </q-btn>
         <q-btn
           flat
           dense
           round
           :icon="darkModeIcon"
           aria-label="Toggle Dark Mode"
-          @click="settingsStore.toggleDarkMode()"
+          @click="themeStore.toggleDarkMode()"
         >
           <q-tooltip>{{ darkModeTooltip }}</q-tooltip>
         </q-btn>
@@ -146,7 +212,28 @@ onMounted(() => {
     <q-drawer v-model="taskDrawerOpen" side="right" bordered :width="360">
       <q-scroll-area class="fit">
         <q-list padding>
-          <q-item-label header class="text-h6">任务队列</q-item-label>
+          <q-item-label header class="row items-center justify-between">
+            <span class="text-h6">任务队列</span>
+            <q-btn
+              v-if="notificationSupported && permissionState !== 'granted'"
+              flat
+              dense
+              size="sm"
+              icon="notifications"
+              color="primary"
+              @click="handleRequestNotification"
+            >
+              <q-tooltip>开启浏览器通知</q-tooltip>
+            </q-btn>
+            <q-icon
+              v-else-if="notificationSupported && permissionState === 'granted'"
+              name="notifications_active"
+              color="positive"
+              size="sm"
+            >
+              <q-tooltip>浏览器通知已开启</q-tooltip>
+            </q-icon>
+          </q-item-label>
           <q-item v-for="task in tasks" :key="task.id" class="task-item">
             <q-item-section avatar>
               <q-avatar :color="statusColor(task.status)" text-color="white" size="36px">

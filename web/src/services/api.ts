@@ -140,6 +140,15 @@ export async function fetchRecentRecords() {
   return data;
 }
 
+export async function deleteRecord(id: string) {
+  await api.delete(`/records/${id}`);
+}
+
+export async function deleteRecordsBatch(ids: string[]) {
+  const { data } = await api.post<{ deleted: number }>('/records/batch', { ids });
+  return data.deleted;
+}
+
 // ============== Snippets ==============
 
 export async function fetchSnippets(params: {

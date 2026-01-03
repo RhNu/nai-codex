@@ -1,49 +1,41 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
-import { Dark, LocalStorage } from 'quasar';
+import { LocalStorage } from 'quasar';
 
-const DARK_MODE_KEY = 'codex-dark-mode';
+const AUTOCOMPLETE_ENABLED_KEY = 'codex-autocomplete-enabled';
 
+/**
+ * 全局编辑器设置 Store
+ */
 export const useSettingsStore = defineStore('settings', () => {
-  // 从 LocalStorage 读取初始值，默认跟随系统
-  const savedDarkMode = LocalStorage.getItem<boolean | 'auto'>(DARK_MODE_KEY);
-  const darkMode = ref<boolean | 'auto'>(savedDarkMode ?? 'auto');
+  // 自动补全开关
+  const savedAutocompleteEnabled = LocalStorage.getItem<boolean>(AUTOCOMPLETE_ENABLED_KEY);
+  const autocompleteEnabled = ref<boolean>(savedAutocompleteEnabled ?? false);
 
-  // 应用暗色模式设置
-  function applyDarkMode() {
-    Dark.set(darkMode.value);
-  }
-
-  // 切换暗色模式
-  function toggleDarkMode() {
-    if (darkMode.value === 'auto') {
-      darkMode.value = true;
-    } else if (darkMode.value === true) {
-      darkMode.value = false;
-    } else {
-      darkMode.value = 'auto';
-    }
-  }
-
-  // 设置暗色模式
-  function setDarkMode(value: boolean | 'auto') {
-    darkMode.value = value;
-  }
-
-  // 监听变化并保存
+  // 监听变化，持久化到 LocalStorage
   watch(
-    darkMode,
+    autocompleteEnabled,
     (val) => {
-      LocalStorage.set(DARK_MODE_KEY, val);
-      applyDarkMode();
+      LocalStorage.set(AUTOCOMPLETE_ENABLED_KEY, val);
     },
-    { immediate: true },
+    { immediate: false },
   );
 
+  // 切换自动补全
+  function toggleAutocomplete() {
+    autocompleteEnabled.value = !autocompleteEnabled.value;
+  }
+
+  // 设置自动补全
+  function setAutocomplete(enabled: boolean) {
+    autocompleteEnabled.value = enabled;
+  }
+
   return {
-    darkMode,
-    toggleDarkMode,
-    setDarkMode,
-    applyDarkMode,
+    // State
+    autocompleteEnabled,
+    // Actions
+    toggleAutocomplete,
+    setAutocomplete,
   };
 });

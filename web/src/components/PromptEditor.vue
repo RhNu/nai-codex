@@ -18,11 +18,12 @@
  * - <snippet 开头触发 snippet 搜索
  * - 选择项目后自动添加逗号空格，方便连续操作
  */
-import { ref, watch, computed, nextTick, onMounted, onUnmounted } from 'vue';
+import { ref, watch, computed, nextTick, onMounted, onUnmounted, toRef } from 'vue';
 import { useDebounceFn } from '@vueuse/core';
 import { formatPrompt } from 'src/services/api';
 import { parsePrompt, type HighlightSpan } from 'src/utils/promptParser';
 import { useAutocomplete } from 'src/composables/useAutocomplete';
+import { useSettingsStore } from 'src/stores/settings';
 
 const props = withDefaults(
   defineProps<{
@@ -31,15 +32,12 @@ const props = withDefaults(
     placeholder?: string;
     minHeight?: string;
     disabled?: boolean;
-    /** 是否显示自动补全开关，默认显示 */
-    showAutocompleteToggle?: boolean;
   }>(),
   {
     label: '',
     placeholder: '',
     minHeight: '80px',
     disabled: false,
-    showAutocompleteToggle: true,
   },
 );
 
@@ -53,8 +51,9 @@ const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const backdropRef = ref<HTMLDivElement | null>(null);
 const containerRef = ref<HTMLDivElement | null>(null);
 
-// 自动补全开关
-const autocompleteEnabled = ref(false);
+// 使用全局设置 store 中的自动补全开关
+const settingsStore = useSettingsStore();
+const autocompleteEnabled = toRef(settingsStore, 'autocompleteEnabled');
 
 const spans = ref<HighlightSpan[]>([]);
 const localValue = ref(props.modelValue);
@@ -344,18 +343,6 @@ defineExpose({
     </div>
     <!-- 工具栏 -->
     <div class="prompt-editor__toolbar">
-      <q-checkbox
-        v-if="showAutocompleteToggle"
-        v-model="autocompleteEnabled"
-        size="xs"
-        dense
-        label="自动补全"
-        icon="auto_awesome"
-        color="secondary"
-        class="q-mr-sm"
-      >
-        <q-tooltip>词库自动补全</q-tooltip>
-      </q-checkbox>
       <q-btn
         flat
         dense

@@ -58,6 +58,10 @@ export function parsePrompt(input: string): ParseResult {
 
   let pos = 0;
 
+  // 安全保护：最大迭代次数，防止无限循环
+  const maxIterations = len * 2 + 100;
+  let iterations = 0;
+
   /** 计算当前权重 */
   function calculateWeight(): number {
     let weight = 1.0;
@@ -149,6 +153,13 @@ export function parsePrompt(input: string): ParseResult {
   }
 
   while (pos < len) {
+    // 安全保护：防止无限循环
+    iterations++;
+    if (iterations > maxIterations) {
+      console.warn('[promptParser] 超过最大迭代次数，中止解析');
+      break;
+    }
+
     const ch = input[pos]!;
 
     // 检查换行
@@ -204,6 +215,7 @@ export function parsePrompt(input: string): ParseResult {
     // 检查权重结束 `::`
     if (ch === ':' && pos + 1 < len && input[pos + 1] === ':') {
       if (colonWeight !== null) {
+        // 正常的权重结束符
         spans.push({
           start: pos,
           end: pos + 2,
@@ -211,6 +223,17 @@ export function parsePrompt(input: string): ParseResult {
           type: 'weight_end',
         });
         colonWeight = null;
+        pos += 2;
+        continue;
+      } else {
+        // colonWeight 为 null 时，:: 作为普通文本处理
+        // 避免无限循环
+        spans.push({
+          start: pos,
+          end: pos + 2,
+          weight: 1.0,
+          type: 'text',
+        });
         pos += 2;
         continue;
       }

@@ -1,11 +1,21 @@
 import { defineStore } from 'pinia';
 import { Notify } from 'quasar';
+import { useWebNotification } from '@vueuse/core';
 import {
   fetchTaskStatus,
   submitTask,
   type GenerationParams,
   type TaskStatus,
 } from 'src/services/api';
+
+// 浏览器通知实例
+const { isSupported: notificationSupported, show: showNotification } = useWebNotification({
+  title: '',
+  dir: 'auto',
+  lang: 'zh-CN',
+  renotify: true,
+  tag: 'codex-task',
+});
 
 export type TaskItem = {
   id: string;
@@ -82,14 +92,21 @@ export const useTaskStore = defineStore('tasks', {
       const item = this.items.find((t) => t.id === id);
       if (!item) return;
       const prevStatus = item.status;
-      if (status.status === 'pending' || status.status === 'running') {
-        item.status = status.status;
+
+      // 状态转换为 running 时记录实际开始时间
+      if (status.status === 'running' && prevStatus === 'pending') {
+        item.status = 'running';
+        // 更新为实际开始运行的时间
+        item.startedAt = Date.now();
+      } else if (status.status === 'pending') {
+        item.status = 'pending';
       } else if (status.status === 'failed') {
-        item.status = 'failed';
-        item.error = status.error;
-        item.completedAt = Date.now();
-        // 任务失败通知
+        // 仅在状态首次变为 failed 时记录完成时间
         if (prevStatus !== 'failed') {
+          item.status = 'failed';
+          item.error = status.error;
+          item.completedAt = Date.now();
+          // 应用内通知
           Notify.create({
             type: 'negative',
             message: `任务失败: ${item.title}`,
@@ -97,12 +114,20 @@ export const useTaskStore = defineStore('tasks', {
             timeout: 5000,
             position: 'top-right',
           });
+          // 浏览器通知（页面不在前台时）
+          if (notificationSupported.value && document.hidden) {
+            void showNotification({
+              title: '任务失败',
+              body: `${item.title}\n${status.error}`,
+            });
+          }
         }
       } else if (status.status === 'completed') {
-        item.status = 'completed';
-        item.completedAt = Date.now();
-        // 任务完成通知
+        // 仅在状态首次变为 completed 时记录完成时间
         if (prevStatus !== 'completed') {
+          item.status = 'completed';
+          item.completedAt = Date.now();
+          // 应用内通知
           Notify.create({
             type: 'positive',
             message: `任务完成: ${item.title}`,
@@ -119,6 +144,13 @@ export const useTaskStore = defineStore('tasks', {
               },
             ],
           });
+          // 浏览器通知（页面不在前台时）
+          if (notificationSupported.value && document.hidden) {
+            void showNotification({
+              title: '任务完成',
+              body: `${item.title}\n已生成 ${item.count} 张图片`,
+            });
+          }
         }
       }
     },

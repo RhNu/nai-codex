@@ -19,6 +19,8 @@ export interface UseGalleryNavigationOptions<T> {
   getItemId: (item: T) => string;
   /** 是否循环导航（首尾相连），默认 true */
   loop?: boolean;
+  /** Ctrl+C 复制回调 */
+  onCopy?: () => void;
 }
 
 export interface UseGalleryNavigationReturn {
@@ -41,7 +43,7 @@ export interface UseGalleryNavigationReturn {
 export function useGalleryNavigation<T>(
   options: UseGalleryNavigationOptions<T>,
 ): UseGalleryNavigationReturn {
-  const { currentItem, items, isDialogOpen, getItemId, loop = true } = options;
+  const { currentItem, items, isDialogOpen, getItemId, loop = true, onCopy } = options;
 
   const currentIndex = computed(() => {
     if (!currentItem.value) return -1;
@@ -122,6 +124,13 @@ export function useGalleryNavigation<T>(
       case 'End':
         event.preventDefault();
         goToIndex(total.value - 1);
+        break;
+      case 'c':
+        // Ctrl+C 复制（无元数据图片）
+        if ((event.ctrlKey || event.metaKey) && onCopy) {
+          event.preventDefault();
+          onCopy();
+        }
         break;
     }
   });

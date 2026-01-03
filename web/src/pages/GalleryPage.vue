@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useQuasar } from 'quasar';
 import { useClipboard } from '@vueuse/core';
-import { fetchRecentRecords, type GenerationRecord } from 'src/services/api';
+import { fetchRecentRecords, deleteRecordsBatch, type GenerationRecord } from 'src/services/api';
 import { useGalleryNavigation, useImageTools } from 'src/composables';
 
 type GalleryItem = {
@@ -57,6 +57,9 @@ const {
   isDialogOpen: showDialog,
   getItemId: (item) => item.id,
   loop: true,
+  onCopy: () => {
+    void copyWithoutMetadata();
+  },
 });
 
 // 按日期分组的图片
@@ -210,11 +213,28 @@ function deleteSelected() {
     cancel: true,
     persistent: true,
   }).onOk(() => {
-    // 目前前端没有删除API，这里只是从列表移除
-    images.value = images.value.filter((img) => !selectedIds.value.has(img.id));
-    $q.notify({ type: 'positive', message: `已移除 ${selectedIds.value.size} 张图片` });
-    selectedIds.value.clear();
-    selectMode.value = false;
+    // 获取选中图片对应的 recordId 列表（去重）
+    const recordIds = new Set<string>();
+    images.value.forEach((img) => {
+      if (selectedIds.value.has(img.id)) {
+        recordIds.add(img.recordId);
+      }
+    });
+
+    void (async () => {
+      try {
+        const deleted = await deleteRecordsBatch(Array.from(recordIds));
+        // 从本地列表中移除已删除的图片
+        images.value = images.value.filter((img) => !recordIds.has(img.recordId));
+        $q.notify({ type: 'positive', message: `已删除 ${deleted} 条生成记录` });
+      } catch (err) {
+        console.error('Delete failed:', err);
+        $q.notify({ type: 'negative', message: '删除失败，请重试' });
+      } finally {
+        selectedIds.value.clear();
+        selectMode.value = false;
+      }
+    })();
   });
 }
 
@@ -544,10 +564,18 @@ async function load() {
 }
 
 .date-section {
-  background: white;
+  background: var(--q-dark-page, white);
   border-radius: 8px;
   padding: 16px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.body--light .date-section {
+  background: white;
+}
+
+.body--dark .date-section {
+  background: var(--q-dark);
 }
 
 .date-header {

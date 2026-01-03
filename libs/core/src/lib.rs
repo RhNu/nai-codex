@@ -839,6 +839,59 @@ impl CoreStorage {
         Ok(())
     }
 
+    /// 获取单条记录
+    pub fn get_record(&self, id: Uuid) -> CoreResult<Option<GenerationRecord>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(TABLE_RECORDS)?;
+        if let Some(value) = table.get(id)? {
+            let record: GenerationRecord = serde_json::from_str(&value.value())?;
+            return Ok(Some(record));
+        }
+        Ok(None)
+    }
+
+    /// 删除记录（同时删除关联的图片文件）
+    pub fn delete_record(&self, id: Uuid) -> CoreResult<Option<GenerationRecord>> {
+        // 先获取记录以便后续删除文件
+        let record = self.get_record(id)?;
+        if record.is_none() {
+            return Ok(None);
+        }
+        let record = record.unwrap();
+
+        // 删除关联的图片文件
+        for img in &record.images {
+            if img.path.exists() {
+                if let Err(e) = fs::remove_file(&img.path) {
+                    info!(path=?img.path, error=%e, "failed to delete gallery image file");
+                } else {
+                    info!(path=?img.path, "deleted gallery image file");
+                }
+            }
+        }
+
+        // 从数据库删除记录
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(TABLE_RECORDS)?;
+            table.remove(id)?;
+        }
+        write_txn.commit()?;
+        info!(id=%id, images=%record.images.len(), "record deleted");
+        Ok(Some(record))
+    }
+
+    /// 批量删除记录
+    pub fn delete_records(&self, ids: &[Uuid]) -> CoreResult<usize> {
+        let mut deleted = 0;
+        for id in ids {
+            if self.delete_record(*id)?.is_some() {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
+    }
+
     pub fn list_snippets(
         &self,
         query: Option<&str>,

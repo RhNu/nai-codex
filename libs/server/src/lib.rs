@@ -72,6 +72,8 @@ pub async fn serve(cfg: ServerConfig) -> Result<()> {
         .route("/tasks", post(create_task))
         .route("/tasks/{id}", get(get_task))
         .route("/records/recent", get(list_recent_records))
+        .route("/records/{id}", axum::routing::delete(delete_record))
+        .route("/records/batch", post(delete_records_batch))
         .route("/snippets", get(list_snippets).post(create_snippet))
         .route(
             "/snippets/{id}",
@@ -250,6 +252,40 @@ async fn list_recent_records(State(state): State<AppState>) -> impl IntoResponse
                 .collect();
             Json(mapped).into_response()
         }
+        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+/// 删除单条记录
+async fn delete_record(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
+    let storage = Arc::clone(&state.storage);
+    match tokio::task::spawn_blocking(move || storage.delete_record(id)).await {
+        Ok(Ok(Some(_))) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteRecordsBatchPayload {
+    ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteRecordsBatchResponse {
+    deleted: usize,
+}
+
+/// 批量删除记录
+async fn delete_records_batch(
+    State(state): State<AppState>,
+    Json(payload): Json<DeleteRecordsBatchPayload>,
+) -> impl IntoResponse {
+    let storage = Arc::clone(&state.storage);
+    match tokio::task::spawn_blocking(move || storage.delete_records(&payload.ids)).await {
+        Ok(Ok(deleted)) => Json(DeleteRecordsBatchResponse { deleted }).into_response(),
         Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
