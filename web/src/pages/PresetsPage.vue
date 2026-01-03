@@ -48,6 +48,7 @@ const {
   selectFile,
   handleFileChange,
   handleDrop,
+  handlePaste,
   clearImage,
   reset: resetImage,
   fileInputRef,
@@ -361,8 +362,11 @@ watch(page, () => {
           />
 
           <!-- 预览图 -->
-          <div class="preview-upload-section">
-            <div class="text-caption text-grey-7 q-mb-sm">预览图（可选）</div>
+          <div class="preview-upload-section" @paste="handlePaste">
+            <div class="text-caption text-grey-7 q-mb-sm">
+              预览图（可选）
+              <span class="text-grey-5">- 支持 Ctrl+V 粘贴</span>
+            </div>
             <input
               ref="fileInputRef"
               type="file"
@@ -374,12 +378,14 @@ watch(page, () => {
             <div
               v-if="!currentPreviewUrl"
               class="upload-area"
+              tabindex="0"
               @click="selectFile"
               @drop.prevent="handleDrop"
               @dragover.prevent
+              @paste="handlePaste"
             >
               <q-icon name="add_photo_alternate" size="2rem" color="grey-5" />
-              <div class="text-caption text-grey-6 q-mt-sm">点击或拖拽上传预览图</div>
+              <div class="text-caption text-grey-6 q-mt-sm">点击、拖拽或粘贴上传预览图</div>
               <div class="text-caption text-grey-5">支持 PNG/JPEG/WebP，最大 5MB</div>
             </div>
 
@@ -511,9 +517,11 @@ watch(page, () => {
   cursor: pointer;
   transition: all 0.2s;
 
-  &:hover {
+  &:hover,
+  &:focus {
     border-color: var(--q-primary);
     background: rgba(25, 118, 210, 0.04);
+    outline: none;
   }
 }
 

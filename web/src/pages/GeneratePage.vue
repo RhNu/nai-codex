@@ -12,6 +12,7 @@ import {
   type GenerationParams,
   type Preset,
 } from 'src/services/api';
+import { parseImageMetadata, type ParsedMetadata } from 'src/composables';
 import PromptEditor from 'src/components/PromptEditor.vue';
 import PromptSuggester from 'src/components/PromptSuggester.vue';
 
@@ -103,6 +104,21 @@ const showSnippetPanel = ref(false);
 const showSnippetPanelForNegative = ref(false);
 const showSnippetPanelForCharacter = ref<number | null>(null); // 角色槽索引
 const promptEditorRef = ref<InstanceType<typeof PromptEditor> | null>(null);
+
+// 图片元数据导入
+const showImportDialog = ref(false);
+const importMetadata = ref<ParsedMetadata | null>(null);
+const importPreviewUrl = ref<string | null>(null);
+const importLoading = ref(false);
+const isDragOver = ref(false);
+const importFileInputRef = ref<HTMLInputElement | null>(null);
+
+// 导入选项
+const importOptions = ref({
+  positivePrompt: true,
+  negativePrompt: true,
+  params: false,
+});
 
 type CharacterSlot = {
   prompt: string;
@@ -270,6 +286,143 @@ function onSnippetSelect(snippetTag: string) {
   } else {
     insertSnippet('prompt', snippetTag);
     showSnippetPanel.value = false;
+  }
+}
+
+// ========== 图片元数据导入 ==========
+
+// 处理图片文件解析
+async function processImportFile(file: File) {
+  if (!file.type.startsWith('image/')) {
+    $q.notify({ type: 'negative', message: '请上传图片文件' });
+    return;
+  }
+
+  importLoading.value = true;
+  try {
+    // 创建预览 URL
+    if (importPreviewUrl.value) {
+      URL.revokeObjectURL(importPreviewUrl.value);
+    }
+    importPreviewUrl.value = URL.createObjectURL(file);
+
+    // 解析元数据
+    const metadata = await parseImageMetadata(file);
+    if (metadata) {
+      importMetadata.value = metadata;
+      showImportDialog.value = true;
+    } else {
+      $q.notify({ type: 'warning', message: '未能解析到图片元数据' });
+    }
+  } catch (err) {
+    console.error('解析图片失败:', err);
+    $q.notify({ type: 'negative', message: '解析图片失败' });
+  } finally {
+    importLoading.value = false;
+  }
+}
+
+// 选择导入文件
+function selectImportFile() {
+  importFileInputRef.value?.click();
+}
+
+// 处理文件变化
+async function handleImportFileChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (file) {
+    await processImportFile(file);
+  }
+  input.value = '';
+}
+
+// 处理页面拖放
+function handleDragOver(event: DragEvent) {
+  event.preventDefault();
+  isDragOver.value = true;
+}
+
+function handleDragLeave(event: DragEvent) {
+  // 只有真正离开页面时才取消高亮
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const x = event.clientX;
+  const y = event.clientY;
+  if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
+    isDragOver.value = false;
+  }
+}
+
+async function handleDrop(event: DragEvent) {
+  event.preventDefault();
+  isDragOver.value = false;
+
+  const file = event.dataTransfer?.files[0];
+  if (file && file.type.startsWith('image/')) {
+    await processImportFile(file);
+  }
+}
+
+// 应用导入的元数据
+function applyImportedMetadata() {
+  if (!importMetadata.value) return;
+
+  const m = importMetadata.value;
+
+  // 导入正向提示词
+  if (importOptions.value.positivePrompt && m.positivePrompt) {
+    prompt.value = m.positivePrompt;
+  }
+
+  // 导入负向提示词
+  if (importOptions.value.negativePrompt && m.negativePrompt) {
+    negative.value = m.negativePrompt;
+  }
+
+  // 导入参数
+  if (importOptions.value.params) {
+    if (m.steps) steps.value = Number(m.steps) || steps.value;
+    if (m.cfg) scale.value = Number(m.cfg) || scale.value;
+    if (m.dimensions) {
+      width.value = m.dimensions.width;
+      height.value = m.dimensions.height;
+    }
+  }
+
+  $q.notify({ type: 'positive', message: '已导入图片参数' });
+  closeImportDialog();
+}
+
+// 导入到角色槽
+function importToCharacterSlot(slotIndex: number) {
+  if (!importMetadata.value?.positivePrompt) return;
+
+  // 确保槽位存在
+  while (characterSlots.value.length <= slotIndex) {
+    characterSlots.value.push({ prompt: '', uc: '', enabled: true, preset_id: null });
+  }
+
+  const slot = characterSlots.value[slotIndex];
+  if (!slot) return;
+
+  if (importOptions.value.positivePrompt && importMetadata.value.positivePrompt) {
+    slot.prompt = importMetadata.value.positivePrompt;
+  }
+  if (importOptions.value.negativePrompt && importMetadata.value.negativePrompt) {
+    slot.uc = importMetadata.value.negativePrompt;
+  }
+
+  $q.notify({ type: 'positive', message: `已导入到角色 ${slotIndex + 1}` });
+  closeImportDialog();
+}
+
+// 关闭导入对话框
+function closeImportDialog() {
+  showImportDialog.value = false;
+  importMetadata.value = null;
+  if (importPreviewUrl.value) {
+    URL.revokeObjectURL(importPreviewUrl.value);
+    importPreviewUrl.value = null;
   }
 }
 
@@ -472,10 +625,45 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <q-page padding class="generate-page">
+  <q-page
+    padding
+    class="generate-page"
+    @dragover="handleDragOver"
+    @dragleave="handleDragLeave"
+    @drop="handleDrop"
+  >
+    <!-- 全局拖放提示遮罩 -->
+    <div v-if="isDragOver" class="drop-overlay">
+      <div class="drop-overlay-content">
+        <q-icon name="cloud_upload" size="4rem" color="white" />
+        <div class="text-h5 text-white q-mt-md">拖放图片以导入参数</div>
+      </div>
+    </div>
+
+    <!-- 隐藏的文件输入 -->
+    <input
+      ref="importFileInputRef"
+      type="file"
+      accept="image/*"
+      style="display: none"
+      @change="handleImportFileChange"
+    />
+
     <q-card class="generate-card">
       <q-card-section class="q-pb-none">
-        <div class="text-h5">图像生成</div>
+        <div class="row items-center justify-between">
+          <div class="text-h5">图像生成</div>
+          <q-btn
+            flat
+            dense
+            icon="image_search"
+            label="导入图片"
+            color="primary"
+            @click="selectImportFile"
+          >
+            <q-tooltip>从图片导入生成参数</q-tooltip>
+          </q-btn>
+        </div>
       </q-card-section>
 
       <q-card-section class="q-pt-sm">
@@ -787,6 +975,124 @@ onUnmounted(() => {
         }
       "
     />
+
+    <!-- 图片元数据导入对话框 -->
+    <q-dialog v-model="showImportDialog" persistent>
+      <q-card style="min-width: 500px; max-width: 90vw">
+        <q-card-section class="row items-center">
+          <div class="text-h6">导入图片参数</div>
+          <q-space />
+          <q-btn icon="close" flat round dense @click="closeImportDialog" />
+        </q-card-section>
+
+        <q-separator />
+
+        <q-card-section v-if="importMetadata" class="q-gutter-md">
+          <!-- 图片预览和基本信息 -->
+          <div class="row q-gutter-md">
+            <q-img
+              v-if="importPreviewUrl"
+              :src="importPreviewUrl"
+              fit="contain"
+              class="import-preview"
+            />
+            <div class="col">
+              <q-chip
+                :color="importMetadata.generator === 'NovelAI' ? 'purple' : 'primary'"
+                text-color="white"
+                size="md"
+              >
+                {{ importMetadata.generator }}
+              </q-chip>
+              <div v-if="importMetadata.dimensions" class="text-caption text-grey-7 q-mt-sm">
+                尺寸: {{ importMetadata.dimensions.width }}×{{ importMetadata.dimensions.height }}
+              </div>
+              <div v-if="importMetadata.model" class="text-caption text-grey-7">
+                模型: {{ importMetadata.model }}
+              </div>
+              <div v-if="importMetadata.steps" class="text-caption text-grey-7">
+                步数: {{ importMetadata.steps }} | CFG: {{ importMetadata.cfg }}
+              </div>
+            </div>
+          </div>
+
+          <!-- 提示词预览 -->
+          <div v-if="importMetadata.positivePrompt">
+            <div class="text-subtitle2">正向提示词</div>
+            <div class="import-prompt-preview">{{ importMetadata.positivePrompt }}</div>
+          </div>
+
+          <div v-if="importMetadata.negativePrompt">
+            <div class="text-subtitle2">负向提示词</div>
+            <div class="import-prompt-preview negative">{{ importMetadata.negativePrompt }}</div>
+          </div>
+
+          <q-separator />
+
+          <!-- 导入选项 -->
+          <div class="text-subtitle2">导入选项</div>
+          <div class="row q-gutter-md">
+            <q-checkbox
+              v-model="importOptions.positivePrompt"
+              label="正向提示词"
+              :disable="!importMetadata.positivePrompt"
+            />
+            <q-checkbox
+              v-model="importOptions.negativePrompt"
+              label="负向提示词"
+              :disable="!importMetadata.negativePrompt"
+            />
+            <q-checkbox
+              v-model="importOptions.params"
+              label="生成参数"
+              :disable="!importMetadata.steps"
+            />
+          </div>
+        </q-card-section>
+
+        <q-separator />
+
+        <q-card-actions align="right" class="q-pa-md">
+          <!-- 导入到角色槽 -->
+          <q-btn-dropdown
+            flat
+            label="导入到角色槽"
+            icon="person_add"
+            :disable="!importMetadata?.positivePrompt"
+          >
+            <q-list dense>
+              <q-item
+                v-for="i in 6"
+                :key="i"
+                clickable
+                v-close-popup
+                @click="importToCharacterSlot(i - 1)"
+              >
+                <q-item-section avatar>
+                  <q-icon name="person" />
+                </q-item-section>
+                <q-item-section>
+                  角色 {{ i }}
+                  <span v-if="characterSlots[i - 1]?.prompt" class="text-grey-6">（已有内容）</span>
+                </q-item-section>
+              </q-item>
+            </q-list>
+          </q-btn-dropdown>
+
+          <q-btn flat label="取消" @click="closeImportDialog" />
+          <q-btn
+            color="primary"
+            label="导入到主提示词"
+            icon="download"
+            @click="applyImportedMetadata"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <q-inner-loading :showing="importLoading">
+      <q-spinner-gears size="3rem" color="primary" />
+    </q-inner-loading>
   </q-page>
 </template>
 
@@ -794,6 +1100,25 @@ onUnmounted(() => {
 .generate-page {
   max-width: 1200px;
   margin: 0 auto;
+  position: relative;
+}
+
+.drop-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(var(--q-primary-rgb), 0.85);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.drop-overlay-content {
+  text-align: center;
 }
 
 .generate-card {
@@ -825,5 +1150,30 @@ onUnmounted(() => {
 
 .character-card {
   background: rgba(0, 0, 0, 0.02);
+}
+
+.import-preview {
+  width: 120px;
+  height: 120px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.import-prompt-preview {
+  background: var(--q-grey-2);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-family: 'Maple Mono', monospace;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-left: 3px solid var(--q-positive);
+
+  &.negative {
+    border-left-color: var(--q-negative);
+  }
 }
 </style>

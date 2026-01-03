@@ -12,6 +12,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'presets', component: () => import('pages/PresetsPage.vue') },
       { path: 'gallery', component: () => import('pages/GalleryPage.vue') },
       { path: 'lexicon', component: () => import('pages/LexiconPage.vue') },
+      { path: 'metadata', component: () => import('pages/MetadataPage.vue') },
     ],
   },
 
