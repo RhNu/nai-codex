@@ -83,7 +83,7 @@ pub async fn serve(cfg: ServerConfig) -> Result<()> {
             "/snippets/{id}/preview",
             put(update_snippet_preview).delete(delete_snippet_preview),
         )
-        .route("/snippets/{id}/rename", post(rename_snippet))
+        .route("/snippets/{id}/rename", put(rename_snippet))
         .route("/presets", get(list_presets).post(create_preset))
         .route(
             "/presets/{id}",
@@ -93,7 +93,7 @@ pub async fn serve(cfg: ServerConfig) -> Result<()> {
             "/presets/{id}/preview",
             put(update_preset_preview).delete(delete_preset_preview),
         )
-        .route("/presets/{id}/rename", post(rename_preset))
+        .route("/presets/{id}/rename", put(rename_preset))
         .route(
             "/settings/generation",
             get(get_generation_settings).put(save_generation_settings),
