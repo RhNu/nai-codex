@@ -3,7 +3,7 @@ use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use anyhow::{Result, anyhow};
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post, put},
@@ -115,7 +115,9 @@ pub async fn serve(cfg: ServerConfig) -> Result<()> {
         // 词库 API
         .route("/lexicon", get(get_lexicon_index))
         .route("/lexicon/categories/{name}", get(get_lexicon_category))
-        .route("/lexicon/search", get(search_lexicon));
+        .route("/lexicon/search", get(search_lexicon))
+        // 增加请求体大小限制（10MB，适应较大的图片上传）
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024));
 
     let mut router = Router::new()
         .nest("/api", api_router)

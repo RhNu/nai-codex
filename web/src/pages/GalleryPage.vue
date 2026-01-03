@@ -66,7 +66,7 @@ const {
   items: filteredImages,
   isDialogOpen: showDialog,
   getItemId: (item) => item.id,
-  loop: true,
+  loop: false,
   onCopy: () => {
     void copyWithoutMetadata();
   },

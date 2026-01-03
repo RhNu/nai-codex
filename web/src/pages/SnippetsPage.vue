@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch, computed } from 'vue';
 import { useQuasar } from 'quasar';
-import { useClipboard, useDebounceFn } from '@vueuse/core';
+import { useClipboard, useDebounceFn, useEventListener } from '@vueuse/core';
 import {
   createSnippet,
   updateSnippet,
@@ -55,6 +55,18 @@ const {
   reset: resetImage,
   fileInputRef,
 } = useImageUpload();
+
+// 全局粘贴事件监听（对话框打开时生效）
+useEventListener('paste', (event: ClipboardEvent) => {
+  if (!openDialog.value) return;
+  // 避免在输入框中粘贴时触发
+  const target = event.target as HTMLElement;
+  if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+  handlePaste(event);
+});
+
+// 预览大图对话框
+const showFullPreview = ref(false);
 
 // 整体页面锁定状态（任何异步操作期间）
 const isLocked = computed(
@@ -581,8 +593,18 @@ watch(page, () => {
               </div>
 
               <div v-else class="preview-container">
-                <q-img :src="currentPreviewUrl" fit="contain" class="preview-image" />
+                <q-img
+                  :src="currentPreviewUrl"
+                  fit="contain"
+                  class="preview-image cursor-pointer"
+                  @click="showFullPreview = true"
+                >
+                  <q-tooltip>点击查看完整图片</q-tooltip>
+                </q-img>
                 <div class="preview-actions">
+                  <q-btn round flat dense icon="fullscreen" @click="showFullPreview = true">
+                    <q-tooltip>查看完整图片</q-tooltip>
+                  </q-btn>
                   <q-btn round flat dense icon="edit" @click="selectFile">
                     <q-tooltip>更换图片</q-tooltip>
                   </q-btn>
@@ -615,6 +637,21 @@ watch(page, () => {
           <q-btn flat label="取消" v-close-popup />
           <q-btn color="primary" label="保存" :loading="saving" @click="save" />
         </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- 预览图大图对话框 -->
+    <q-dialog v-model="showFullPreview">
+      <q-card class="full-preview-card bg-black">
+        <q-bar class="bg-dark text-white">
+          <q-icon name="image" />
+          <span class="q-ml-sm">预览图</span>
+          <q-space />
+          <q-btn dense flat icon="close" v-close-popup />
+        </q-bar>
+        <q-card-section class="flex flex-center q-pa-none full-preview-content">
+          <q-img :src="currentPreviewUrl" fit="contain" class="full-preview-image" />
+        </q-card-section>
       </q-card>
     </q-dialog>
   </q-page>
@@ -744,5 +781,20 @@ watch(page, () => {
     border-radius: 4px;
     padding: 2px;
   }
+}
+
+.full-preview-card {
+  max-width: 90vw;
+  max-height: 90vh;
+}
+
+.full-preview-content {
+  max-height: calc(90vh - 40px);
+  overflow: auto;
+}
+
+.full-preview-image {
+  max-width: 100%;
+  max-height: calc(90vh - 60px);
 }
 </style>
