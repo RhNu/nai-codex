@@ -14,7 +14,7 @@ use tracing::info;
 use uuid::Uuid;
 
 pub mod prompt_parser;
-pub use prompt_parser::{HighlightSpan, ParseResult, PromptParser, Token};
+pub use prompt_parser::{CommentSpan, HighlightSpan, ParseError, ParseResult, PromptParser, Token};
 
 pub mod lexicon;
 pub use lexicon::{

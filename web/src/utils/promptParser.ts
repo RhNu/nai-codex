@@ -7,6 +7,7 @@
  * - `[tag]` - 减弱，除以 1.05
  * - `[[tag]]` - 减弱，除以 1.05^2，以此类推
  * - `1.5::tag1, tag2 ::` - 冒号权重语法，乘以指定数值直到遇到 `::` 结束
+ * - `//comment//` - 注释语法，双斜杠之间的内容被忽略
  */
 
 /** 权重倍数常量 */
@@ -21,7 +22,8 @@ export type HighlightSpanType =
   | 'weight_num'
   | 'weight_end'
   | 'snippet'
-  | 'newline';
+  | 'newline'
+  | 'comment';
 
 export interface HighlightSpan {
   /** 起始位置（字符索引） */
@@ -42,6 +44,8 @@ export interface ParseResult {
   unclosedBrackets: number;
   /** 是否有未结束的冒号权重 */
   unclosedWeight: boolean;
+  /** 是否有未闭合的注释 */
+  unclosedComment: boolean;
 }
 
 /**
@@ -152,6 +156,31 @@ export function parsePrompt(input: string): ParseResult {
     return null;
   }
 
+  /** 尝试解析注释 `//...//` */
+  function tryParseComment(): { content: string; end: number } | null {
+    // 检查是否以 // 开头
+    if (pos + 1 >= len || input[pos] !== '/' || input[pos + 1] !== '/') {
+      return null;
+    }
+
+    let p = pos + 2; // 跳过开始的 //
+
+    // 寻找结束的 //
+    while (p + 1 < len) {
+      if (input[p] === '/' && input[p + 1] === '/') {
+        const content = input.slice(pos + 2, p);
+        return { content, end: p + 2 };
+      }
+      p++;
+    }
+
+    // 未找到结束符
+    return null;
+  }
+
+  // 跟踪是否有未闭合的注释
+  let hasUnclosedComment = false;
+
   while (pos < len) {
     // 安全保护：防止无限循环
     iterations++;
@@ -161,6 +190,24 @@ export function parsePrompt(input: string): ParseResult {
     }
 
     const ch = input[pos]!;
+
+    // 检查注释 //...//
+    if (ch === '/' && pos + 1 < len && input[pos + 1] === '/') {
+      const comment = tryParseComment();
+      if (comment) {
+        spans.push({
+          start: pos,
+          end: comment.end,
+          weight: 1.0,
+          type: 'comment',
+        });
+        pos = comment.end;
+        continue;
+      } else {
+        // 未闭合的注释，标记但仍作为文本处理
+        hasUnclosedComment = true;
+      }
+    }
 
     // 检查换行
     if (ch === '\n') {
@@ -362,6 +409,10 @@ export function parsePrompt(input: string): ParseResult {
       ) {
         break;
       }
+      // 检查是否是注释开始 //
+      if (c === '/' && pos + 1 < len && input[pos + 1] === '/') {
+        break;
+      }
       // 检查是否是 `::` 权重结束
       if (c === ':' && pos + 1 < len && input[pos + 1] === ':') {
         break;
@@ -393,5 +444,6 @@ export function parsePrompt(input: string): ParseResult {
     unclosedBraces: braceDepth,
     unclosedBrackets: bracketDepth,
     unclosedWeight: colonWeight !== null,
+    unclosedComment: hasUnclosedComment,
   };
 }

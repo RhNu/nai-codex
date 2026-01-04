@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "codex"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "codex-server",
@@ -274,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "codex-api"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "codex-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "codex-server"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "axum",

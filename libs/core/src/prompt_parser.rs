@@ -6,6 +6,7 @@
 //! - `[tag]` - 减弱，除以 1.05
 //! - `[[tag]]` - 减弱，除以 1.05^2，以此类推
 //! - `1.5::tag1, tag2 ::` - 冒号权重语法，乘以指定数值直到遇到 `::` 结束
+//! - `//comment//` - 注释语法，双斜杠之间的内容被忽略
 //! - 未闭合的 {} 或 [] 会影响后续所有提示词
 //!
 //! 提示词结构视为两层:
@@ -13,6 +14,14 @@
 //! - 上层: 权重修饰层 (weight layer)
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// 解析错误
+#[derive(Debug, Error)]
+pub enum ParseError {
+    #[error("未闭合的注释：在位置 {0} 处开始的注释没有结束符 '//'")]
+    UnclosedComment(usize),
+}
 
 /// 权重倍数常量
 const WEIGHT_MULTIPLIER: f64 = 1.05;
@@ -84,6 +93,12 @@ pub enum Token {
     },
     /// 换行符
     Newline { start: usize, end: usize },
+    /// 注释 `//...//`
+    Comment {
+        value: String,
+        start: usize,
+        end: usize,
+    },
 }
 
 impl Token {
@@ -101,6 +116,7 @@ impl Token {
             Token::WeightEnd { start, .. } => *start,
             Token::SnippetRef { start, .. } => *start,
             Token::Newline { start, .. } => *start,
+            Token::Comment { start, .. } => *start,
         }
     }
 
@@ -118,6 +134,7 @@ impl Token {
             Token::WeightEnd { end, .. } => *end,
             Token::SnippetRef { end, .. } => *end,
             Token::Newline { end, .. } => *end,
+            Token::Comment { end, .. } => *end,
         }
     }
 
@@ -149,15 +166,98 @@ pub struct HighlightSpan {
     pub end: usize,
     /// 权重: 1.0 为正常, >1 为增强, <1 为减弱
     pub weight: f64,
-    /// span 类型: "text", "brace", "bracket", "weight_num", "weight_end", "comma", "whitespace", "snippet", "newline"
+    /// span 类型: "text", "brace", "bracket", "weight_num", "weight_end", "comma", "whitespace", "snippet", "newline", "comment"
     #[serde(rename = "type")]
     pub span_type: String,
+}
+
+/// 注释信息
+#[derive(Debug, Clone)]
+pub struct CommentSpan {
+    pub start: usize,
+    pub end: usize,
+    pub content: String,
 }
 
 /// NAI 提示词解析器
 pub struct PromptParser;
 
 impl PromptParser {
+    /// 剥离注释，返回处理后的字符串
+    /// 如果有未闭合的注释，返回错误
+    pub fn strip_comments(input: &str) -> Result<String, ParseError> {
+        let mut result = String::with_capacity(input.len());
+        let mut pos = 0;
+        let bytes = input.as_bytes();
+        let len = bytes.len();
+
+        while pos < len {
+            // 检查是否是注释开始 //
+            if pos + 1 < len && bytes[pos] == b'/' && bytes[pos + 1] == b'/' {
+                let comment_start = pos;
+                pos += 2; // 跳过开始的 //
+
+                // 寻找结束的 //
+                let mut found_end = false;
+                while pos + 1 < len {
+                    if bytes[pos] == b'/' && bytes[pos + 1] == b'/' {
+                        pos += 2; // 跳过结束的 //
+                        found_end = true;
+                        break;
+                    }
+                    pos += 1;
+                }
+
+                if !found_end {
+                    return Err(ParseError::UnclosedComment(comment_start));
+                }
+            } else {
+                // 普通字符
+                result.push(input[pos..].chars().next().unwrap());
+                pos += input[pos..].chars().next().unwrap().len_utf8();
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// 查找所有注释的位置（用于前端高亮）
+    pub fn find_comments(input: &str) -> Vec<CommentSpan> {
+        let mut comments = Vec::new();
+        let mut pos = 0;
+        let bytes = input.as_bytes();
+        let len = bytes.len();
+
+        while pos < len {
+            // 检查是否是注释开始 //
+            if pos + 1 < len && bytes[pos] == b'/' && bytes[pos + 1] == b'/' {
+                let comment_start = pos;
+                pos += 2; // 跳过开始的 //
+                let content_start = pos;
+
+                // 寻找结束的 //
+                while pos + 1 < len {
+                    if bytes[pos] == b'/' && bytes[pos + 1] == b'/' {
+                        let content_end = pos;
+                        pos += 2; // 跳过结束的 //
+                        comments.push(CommentSpan {
+                            start: comment_start,
+                            end: pos,
+                            content: input[content_start..content_end].to_string(),
+                        });
+                        break;
+                    }
+                    pos += 1;
+                }
+                // 如果没找到结束，pos 已经到末尾了，未闭合的注释不加入列表
+            } else {
+                pos += 1;
+            }
+        }
+
+        comments
+    }
+
     /// 解析提示词，返回 token 列表
     pub fn parse(input: &str) -> ParseResult {
         let mut tokens = Vec::new();
@@ -173,6 +273,46 @@ impl PromptParser {
 
         while pos < chars.len() {
             let (byte_pos, ch) = chars[pos];
+
+            // 检查注释 //...//
+            if ch == '/' && pos + 1 < chars.len() && chars[pos + 1].1 == '/' {
+                let comment_start = byte_pos;
+                let mut comment_pos = pos + 2; // 跳过开始的 //
+                let content_start = comment_pos;
+
+                // 寻找结束的 //
+                let mut found_end = false;
+                while comment_pos + 1 < chars.len() {
+                    if chars[comment_pos].1 == '/' && chars[comment_pos + 1].1 == '/' {
+                        let content_end = comment_pos;
+                        let comment_end = chars[comment_pos + 1].0 + 1; // 结束 // 的字节位置
+
+                        // 提取注释内容
+                        let content: String = chars[content_start..content_end]
+                            .iter()
+                            .map(|(_, c)| *c)
+                            .collect();
+
+                        tokens.push(Token::Comment {
+                            value: content,
+                            start: comment_start,
+                            end: comment_end,
+                        });
+
+                        pos = comment_pos + 2;
+                        found_end = true;
+                        break;
+                    }
+                    comment_pos += 1;
+                }
+
+                // 如果找到了结束符，继续下一轮
+                if found_end {
+                    continue;
+                }
+                // 未闭合的注释，把 // 当作普通文本处理
+                // 这里不报错，让 strip_comments 去处理错误
+            }
 
             // 检查换行
             if ch == '\n' {
@@ -356,6 +496,7 @@ impl PromptParser {
                     || c == '\r'
                     || c == '<'
                     || (c == ':' && pos + 1 < chars.len() && chars[pos + 1].1 == ':')
+                    || (c == '/' && pos + 1 < chars.len() && chars[pos + 1].1 == '/')
                 {
                     break;
                 }
@@ -599,6 +740,14 @@ impl PromptParser {
                         span_type: "newline".to_string(),
                     });
                 }
+                Token::Comment { start, end, .. } => {
+                    spans.push(HighlightSpan {
+                        start: *start,
+                        end: *end,
+                        weight: 1.0,
+                        span_type: "comment".to_string(),
+                    });
+                }
             }
         }
 
@@ -694,6 +843,11 @@ impl PromptParser {
                         }
                     }
                     output.push_str(&format!("<snippet:{}>", name));
+                }
+                Token::Comment { value, .. } => {
+                    // 保留注释原样
+                    consecutive_newlines = 0;
+                    output.push_str(&format!("//{}//", value));
                 }
             }
             prev_token = Some(token);
@@ -823,5 +977,130 @@ mod tests {
             &input[snippet_spans[1].start..snippet_spans[1].end],
             "<snippet:粗糙/saaa>"
         );
+    }
+
+    #[test]
+    fn test_comment_basic() {
+        // 测试基本注释
+        let input = "1girl, //this is a comment//, blue hair";
+        let result = PromptParser::parse(input);
+
+        let comment_token = result
+            .tokens
+            .iter()
+            .find(|t| matches!(t, Token::Comment { .. }));
+        assert!(comment_token.is_some());
+
+        if let Some(Token::Comment { value, .. }) = comment_token {
+            assert_eq!(value, "this is a comment");
+        }
+    }
+
+    #[test]
+    fn test_comment_multiline() {
+        // 测试多行注释
+        let input = "1girl, //line1\nline2//, blue hair";
+        let result = PromptParser::parse(input);
+
+        let comment_token = result
+            .tokens
+            .iter()
+            .find(|t| matches!(t, Token::Comment { .. }));
+        assert!(comment_token.is_some());
+
+        if let Some(Token::Comment { value, .. }) = comment_token {
+            assert_eq!(value, "line1\nline2");
+        }
+    }
+
+    #[test]
+    fn test_strip_comments() {
+        // 测试剥离注释
+        let input = "1girl, //comment//, blue hair";
+        let result = PromptParser::strip_comments(input).unwrap();
+        assert_eq!(result, "1girl, , blue hair");
+    }
+
+    #[test]
+    fn test_strip_comments_multiple() {
+        // 测试剥离多个注释
+        let input = "//c1// hello //c2// world";
+        let result = PromptParser::strip_comments(input).unwrap();
+        assert_eq!(result, " hello  world");
+    }
+
+    #[test]
+    fn test_strip_comments_unclosed() {
+        // 测试未闭合注释
+        let input = "1girl, //unclosed comment";
+        let result = PromptParser::strip_comments(input);
+        assert!(result.is_err());
+
+        if let Err(ParseError::UnclosedComment(pos)) = result {
+            assert_eq!(pos, 7); // 注释开始位置
+        }
+    }
+
+    #[test]
+    fn test_comment_with_special_chars() {
+        // 测试注释内包含特殊字符
+        let input = "1girl, //{special} [chars] 1.5:://, blue hair";
+        let result = PromptParser::strip_comments(input).unwrap();
+        assert_eq!(result, "1girl, , blue hair");
+
+        // 解析应该忽略注释内的语法
+        let parse_result = PromptParser::parse(input);
+        let comment_spans: Vec<_> = parse_result
+            .tokens
+            .iter()
+            .filter(|t| matches!(t, Token::Comment { .. }))
+            .collect();
+        assert_eq!(comment_spans.len(), 1);
+    }
+
+    #[test]
+    fn test_find_comments() {
+        let input = "hello //comment1// world //comment2//";
+        let comments = PromptParser::find_comments(input);
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].content, "comment1");
+        assert_eq!(comments[1].content, "comment2");
+    }
+
+    #[test]
+    fn test_single_slash_not_comment() {
+        // 测试单斜杠不会被识别为注释
+        let input = "1girl, a/b, c / d, path/to/file";
+        let result = PromptParser::parse(input);
+
+        // 不应该有任何注释 token
+        let comment_tokens: Vec<_> = result
+            .tokens
+            .iter()
+            .filter(|t| matches!(t, Token::Comment { .. }))
+            .collect();
+        assert_eq!(comment_tokens.len(), 0);
+
+        // strip_comments 应该返回原始字符串（因为没有注释）
+        let stripped = PromptParser::strip_comments(input).unwrap();
+        assert_eq!(stripped, input);
+    }
+
+    #[test]
+    fn test_triple_slash() {
+        // 测试三个斜杠的情况：应该被识别为注释开始+一个斜杠内容
+        let input = "hello ///content// world";
+        let result = PromptParser::parse(input);
+
+        let comment_token = result
+            .tokens
+            .iter()
+            .find(|t| matches!(t, Token::Comment { .. }));
+        assert!(comment_token.is_some(), "Should find a comment token");
+
+        if let Some(Token::Comment { value, .. }) = comment_token {
+            // /// 开始，// 结束，内容是 /content
+            assert_eq!(value, "/content");
+        }
     }
 }

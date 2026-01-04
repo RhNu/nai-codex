@@ -11,6 +11,7 @@
  * - 蓝色深度代表削弱 ([])
  * - 绿色代表权重结束符 ::
  * - 紫色代表 snippet 引用
+ * - 淡灰色斜体代表注释 //...//
  *
  * 自动补全：
  * - 可选功能，默认关闭
@@ -143,6 +144,10 @@ function getWeightStyle(span: HighlightSpan): string {
   const { weight, type } = span;
 
   // 特殊类型的颜色
+  if (type === 'comment') {
+    // 注释 - 淡灰色，斜体
+    return 'color: #9ca3af; font-style: italic; opacity: 0.7;';
+  }
   if (type === 'weight_end') {
     return 'color: #10b981; font-weight: bold;'; // 绿色 - 权重结束符
   }
