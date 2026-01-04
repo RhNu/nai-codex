@@ -964,17 +964,22 @@ watch(mainPage, () => {
 }
 
 .full-preview-card {
-  max-width: 90vw;
-  max-height: 90vh;
+  width: 90vw;
+  height: 90vh;
+  max-width: 95vw;
+  max-height: 95vh;
 }
 
 .full-preview-content {
-  max-height: calc(90vh - 40px);
+  height: calc(90vh - 40px);
+  max-height: calc(95vh - 40px);
   overflow: auto;
 }
 
 .full-preview-image {
+  width: 100%;
+  height: 100%;
   max-width: 100%;
-  max-height: calc(90vh - 60px);
+  max-height: 100%;
 }
 </style>
