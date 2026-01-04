@@ -239,7 +239,11 @@ impl CoreStorage {
         if let Some(parent) = db_path.parent() {
             fs::create_dir_all(parent).context("create db parent dir")?;
         }
+        let preview_dir = preview_dir.as_ref().to_path_buf();
         fs::create_dir_all(&preview_dir).context("create preview dir")?;
+        // 创建子目录
+        fs::create_dir_all(preview_dir.join("snippets")).context("create snippets preview dir")?;
+        fs::create_dir_all(preview_dir.join("presets")).context("create presets preview dir")?;
         let db = Database::create(db_path).context("open redb database")?;
 
         // Ensure all tables exist so read transactions never fail on first use
@@ -257,12 +261,26 @@ impl CoreStorage {
         }
 
         let str_db_path = db_path.to_str().unwrap_or("unknown");
-        let str_preview_dir = preview_dir.as_ref().to_str().unwrap_or("unknown");
+        let str_preview_dir = preview_dir.to_str().unwrap_or("unknown");
         info!(?str_db_path, ?str_preview_dir, "core storage opened");
         Ok(Self {
             db: Arc::new(db),
-            preview_dir: preview_dir.as_ref().to_path_buf(),
+            preview_dir,
         })
+    }
+
+    /// 生成带时间戳的预览图文件名，解决浏览器缓存问题
+    fn generate_preview_filename(id: Uuid, subdir: &str) -> String {
+        let ts = Utc::now().timestamp_millis();
+        format!("{}/{}_{}.png", subdir, id, ts)
+    }
+
+    /// 删除旧的预览图文件（如果存在）
+    fn remove_old_preview(&self, old_path: Option<&str>) {
+        if let Some(path) = old_path {
+            let full_path = self.preview_dir.join(path);
+            let _ = fs::remove_file(full_path);
+        }
     }
 
     pub fn upsert_snippet(
@@ -273,24 +291,30 @@ impl CoreStorage {
         validate_snippet_name(&snippet.name)?;
         snippet.updated_at = Utc::now();
 
-        if let Some(bytes) = preview_bytes {
-            let preview_filename = format!("{}.png", snippet.id);
-            let preview_path = self.preview_dir.join(&preview_filename);
-            fs::write(&preview_path, bytes).context("write snippet preview")?;
-            snippet.preview_path = Some(preview_filename);
-        }
-
-        // 获取旧的名称以便更新索引
-        let old_name = {
+        // 获取旧的信息以便更新索引和清理旧预览图
+        let old_data = {
             let read_txn = self.db.begin_read()?;
             let table = read_txn.open_table(TABLE_SNIPPETS)?;
             if let Some(value) = table.get(snippet.id)? {
                 let old: Snippet = serde_json::from_str(&value.value())?;
-                Some(old.name)
+                Some((old.name, old.preview_path))
             } else {
                 None
             }
         };
+
+        // 处理预览图
+        if let Some(bytes) = preview_bytes {
+            // 删除旧的预览图
+            if let Some((_, ref old_preview)) = old_data {
+                self.remove_old_preview(old_preview.as_deref());
+            }
+            // 保存新的预览图（带时间戳）
+            let preview_filename = Self::generate_preview_filename(snippet.id, "snippets");
+            let preview_path = self.preview_dir.join(&preview_filename);
+            fs::write(&preview_path, bytes).context("write snippet preview")?;
+            snippet.preview_path = Some(preview_filename);
+        }
 
         let serialized = serde_json::to_string(&snippet)?;
         let write_txn = self.db.begin_write()?;
@@ -309,9 +333,9 @@ impl CoreStorage {
             }
 
             // 如果是重命名，删除旧的索引条目
-            if let Some(old) = &old_name {
-                if old != &snippet.name {
-                    index.remove(old.clone())?;
+            if let Some((ref old_name, _)) = old_data {
+                if old_name != &snippet.name {
+                    index.remove(old_name.clone())?;
                 }
             }
 
@@ -521,8 +545,14 @@ impl CoreStorage {
         mut preset: CharacterPreset,
         preview_bytes: Option<&[u8]>,
     ) -> CoreResult<CharacterPreset> {
+        // 处理预览图
         if let Some(bytes) = preview_bytes {
-            let preview_filename = format!("preset_{}.png", preset.id);
+            // 获取旧的预览图路径以便删除
+            if let Some(old_preset) = self.get_preset(preset.id)? {
+                self.remove_old_preview(old_preset.preview_path.as_deref());
+            }
+            // 保存新的预览图（带时间戳）
+            let preview_filename = Self::generate_preview_filename(preset.id, "presets");
             let preview_path = self.preview_dir.join(&preview_filename);
             fs::write(&preview_path, bytes).context("write preset preview")?;
             preset.preview_path = Some(preview_filename);
@@ -612,7 +642,11 @@ impl CoreStorage {
             .get_preset(id)?
             .ok_or_else(|| anyhow!("preset not found"))?;
 
-        let preview_filename = format!("preset_{}.png", preset.id);
+        // 删除旧的预览图
+        self.remove_old_preview(preset.preview_path.as_deref());
+
+        // 保存新的预览图（带时间戳）
+        let preview_filename = Self::generate_preview_filename(preset.id, "presets");
         let preview_path = self.preview_dir.join(&preview_filename);
         fs::write(&preview_path, preview_bytes).context("write preset preview")?;
         preset.preview_path = Some(preview_filename);
@@ -706,7 +740,11 @@ impl CoreStorage {
             .get_snippet(id)?
             .ok_or_else(|| anyhow!("snippet not found"))?;
 
-        let preview_filename = format!("{}.png", snippet.id);
+        // 删除旧的预览图
+        self.remove_old_preview(snippet.preview_path.as_deref());
+
+        // 保存新的预览图（带时间戳）
+        let preview_filename = Self::generate_preview_filename(snippet.id, "snippets");
         let preview_path = self.preview_dir.join(&preview_filename);
         fs::write(&preview_path, preview_bytes).context("write snippet preview")?;
         snippet.preview_path = Some(preview_filename);
