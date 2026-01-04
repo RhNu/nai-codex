@@ -531,6 +531,17 @@ export type ArchivableDate = {
   total_size: number;
 };
 
+// 归档任务状态类型
+export type ArchiveTaskStatus =
+  | { status: 'idle' }
+  | { status: 'running'; message: string }
+  | { status: 'completed'; archives: ArchiveInfo[]; deleted_records: number }
+  | { status: 'failed'; error: string };
+
+export type ArchiveStartedResponse = {
+  message: string;
+};
+
 export async function fetchArchives() {
   const { data } = await api.get<ArchiveInfo[]>('/archives');
   return data;
@@ -541,13 +552,18 @@ export async function fetchArchivableDates() {
   return data;
 }
 
+export async function fetchArchiveStatus() {
+  const { data } = await api.get<ArchiveTaskStatus>('/archives/status');
+  return data;
+}
+
 export async function createArchive() {
-  const { data } = await api.post<ArchiveResult>('/archives');
+  const { data } = await api.post<ArchiveStartedResponse>('/archives');
   return data;
 }
 
 export async function createArchiveSelected(dates: string[]) {
-  const { data } = await api.post<ArchiveResult>('/archives/selected', { dates });
+  const { data } = await api.post<ArchiveStartedResponse>('/archives/selected', { dates });
   return data;
 }
 

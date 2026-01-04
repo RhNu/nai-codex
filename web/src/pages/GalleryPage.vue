@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useQuasar } from 'quasar';
 import { useClipboard } from '@vueuse/core';
 import {
@@ -7,6 +7,7 @@ import {
   deleteRecordsBatch,
   fetchArchives,
   fetchArchivableDates,
+  fetchArchiveStatus,
   createArchive,
   createArchiveSelected,
   deleteArchive,
@@ -14,6 +15,7 @@ import {
   type GenerationRecord,
   type ArchiveInfo,
   type ArchivableDate,
+  type ArchiveTaskStatus,
 } from 'src/services/api';
 import { useGalleryNavigation, useImageTools } from 'src/composables';
 
@@ -55,6 +57,8 @@ const archivableDates = ref<ArchivableDate[]>([]);
 const selectedArchiveDates = ref<Set<string>>(new Set());
 const archivesLoading = ref(false);
 const archiveCreating = ref(false);
+const archiveStatus = ref<ArchiveTaskStatus>({ status: 'idle' });
+const archivePollingTimer = ref<ReturnType<typeof setInterval> | null>(null);
 const showArchiveDialog = ref(false);
 
 // 搜索变化时重置页码和日期Tab
@@ -318,15 +322,69 @@ watch(
 async function loadArchives() {
   archivesLoading.value = true;
   try {
-    const [archiveList, dateList] = await Promise.all([fetchArchives(), fetchArchivableDates()]);
+    const [archiveList, dateList, status] = await Promise.all([
+      fetchArchives(),
+      fetchArchivableDates(),
+      fetchArchiveStatus(),
+    ]);
     archives.value = archiveList;
     archivableDates.value = dateList;
+    archiveStatus.value = status;
     // 重置选择
     selectedArchiveDates.value = new Set();
+
+    // 如果有任务正在运行，开始轮询
+    if (status.status === 'running') {
+      startArchivePolling();
+    }
   } catch (err) {
     console.error('Failed to load archives:', err);
   } finally {
     archivesLoading.value = false;
+  }
+}
+
+function startArchivePolling() {
+  if (archivePollingTimer.value) return;
+
+  archivePollingTimer.value = setInterval(() => {
+    void (async () => {
+      try {
+        const status = await fetchArchiveStatus();
+        archiveStatus.value = status;
+
+        if (status.status === 'completed' || status.status === 'failed') {
+          stopArchivePolling();
+
+          if (status.status === 'completed') {
+            $q.notify({
+              type: 'positive',
+              message: `归档完成: 创建了 ${status.archives.length} 个归档文件，删除了 ${status.deleted_records} 条记录`,
+              timeout: 5000,
+            });
+            // 重新加载归档列表和画廊
+            await loadArchives();
+            await load();
+          } else {
+            $q.notify({
+              type: 'negative',
+              message: `归档失败: ${status.error}`,
+              timeout: 5000,
+            });
+          }
+          archiveCreating.value = false;
+        }
+      } catch (err) {
+        console.error('Failed to poll archive status:', err);
+      }
+    })();
+  }, 1000);
+}
+
+function stopArchivePolling() {
+  if (archivePollingTimer.value) {
+    clearInterval(archivePollingTimer.value);
+    archivePollingTimer.value = null;
   }
 }
 
@@ -365,21 +423,26 @@ function confirmCreateArchive() {
     void (async () => {
       archiveCreating.value = true;
       try {
-        const result = await createArchive();
-        const archiveNames = result.archives.map((a) => a.name).join(', ');
+        await createArchive();
         $q.notify({
-          type: 'positive',
-          message: `归档创建成功: ${archiveNames}（删除了 ${result.deleted_records} 条记录）`,
-          timeout: 5000,
+          type: 'info',
+          message: '归档任务已启动，正在后台处理...',
+          timeout: 3000,
         });
-        await loadArchives();
-        await load(); // 重新加载画廊（被归档的图片已删除）
+        // 开始轮询状态
+        archiveStatus.value = { status: 'running', message: '正在归档...' };
+        startArchivePolling();
       } catch (err: unknown) {
         console.error('Failed to create archive:', err);
-        const message = err instanceof Error ? err.message : '创建归档失败';
-        $q.notify({ type: 'negative', message });
-      } finally {
         archiveCreating.value = false;
+        // 检查是否是冲突错误（有任务正在运行）
+        const message =
+          err instanceof Error
+            ? err.message.includes('409') || err.message.includes('conflict')
+              ? '无法创建归档：当前有生成任务正在运行或已有归档任务在进行中'
+              : err.message
+            : '创建归档失败';
+        $q.notify({ type: 'negative', message });
       }
     })();
   });
@@ -401,21 +464,25 @@ function confirmCreateArchiveSelected() {
     void (async () => {
       archiveCreating.value = true;
       try {
-        const result = await createArchiveSelected(dates);
-        const archiveNames = result.archives.map((a) => a.name).join(', ');
+        await createArchiveSelected(dates);
         $q.notify({
-          type: 'positive',
-          message: `归档创建成功: ${archiveNames}（删除了 ${result.deleted_records} 条记录）`,
-          timeout: 5000,
+          type: 'info',
+          message: '归档任务已启动，正在后台处理...',
+          timeout: 3000,
         });
-        await loadArchives();
-        await load(); // 重新加载画廊
+        // 开始轮询状态
+        archiveStatus.value = { status: 'running', message: '正在归档...' };
+        startArchivePolling();
       } catch (err: unknown) {
         console.error('Failed to create archive:', err);
-        const message = err instanceof Error ? err.message : '创建归档失败';
-        $q.notify({ type: 'negative', message });
-      } finally {
         archiveCreating.value = false;
+        const message =
+          err instanceof Error
+            ? err.message.includes('409') || err.message.includes('conflict')
+              ? '无法创建归档：当前有生成任务正在运行或已有归档任务在进行中'
+              : err.message
+            : '创建归档失败';
+        $q.notify({ type: 'negative', message });
       }
     })();
   });
@@ -454,6 +521,10 @@ function formatFileSize(bytes: number): string {
 
 onMounted(() => {
   void load();
+});
+
+onUnmounted(() => {
+  stopArchivePolling();
 });
 
 async function load() {
@@ -745,6 +816,17 @@ async function load() {
           <div class="text-body2 text-grey-7 q-mb-md">
             归档功能会将图片压缩成 zip 文件（每天一个），压缩后原图片文件夹和数据库记录将被删除。
             归档后的图片无法在画廊中浏览，但可以下载或删除归档文件。
+          </div>
+
+          <!-- 归档任务状态显示 -->
+          <div
+            v-if="archiveStatus.status === 'running'"
+            class="q-pa-md q-mb-md bg-blue-1 rounded-borders"
+          >
+            <div class="row items-center">
+              <q-spinner-dots color="primary" size="1.5em" class="q-mr-sm" />
+              <span class="text-primary">{{ archiveStatus.message }}</span>
+            </div>
           </div>
 
           <!-- 可归档日期选择 -->

@@ -1524,10 +1524,10 @@ impl<'a> ArchiveManager<'a> {
             let file = fs::File::create(&archive_path)?;
             let mut zip = zip::ZipWriter::new(file);
 
-            // 使用高压缩率
+            // 使用 Zstd
             let options = SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated)
-                .compression_level(Some(9));
+                .compression_method(zip::CompressionMethod::Zstd)
+                .compression_level(Some(22));
 
             // 添加该日期文件夹中的所有文件
             for entry in fs::read_dir(dir)? {

@@ -3,22 +3,44 @@ use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use anyhow::{Result, anyhow};
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, Query, State},
-    http::StatusCode,
-    response::IntoResponse,
+    body::Body,
+    extract::{DefaultBodyLimit, Path, Request, State},
+    http::{HeaderValue, StatusCode, header::CACHE_CONTROL},
+    middleware::Next,
+    response::{IntoResponse, Response},
     routing::{get, post, put},
 };
-use base64::{self, Engine, prelude::BASE64_STANDARD};
 use codex_api::NaiClient;
 use codex_core::{
-    ArchiveManager, CharacterPreset, CharacterSlotSettings, CoreStorage, GalleryPaths,
-    GenerateTaskRequest, GenerationParams, GenerationRecord, HighlightSpan, LastGenerationSettings,
-    Lexicon, MainPreset, MainPresetSettings, PromptParser, PromptProcessor, Snippet, TaskExecutor,
+    CharacterSlotSettings, CoreStorage, GalleryPaths, GenerateTaskRequest, GenerationParams,
+    GenerationRecord, HighlightSpan, LastGenerationSettings, Lexicon, MainPresetSettings,
+    PromptParser, PromptProcessor, TaskExecutor,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, mpsc};
+use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 use uuid::Uuid;
+
+mod archive;
+mod lexicon;
+mod perset;
+mod snippet;
+
+use crate::archive::{
+    ArchiveState, create_archive, create_archive_selected, delete_archive, download_archive,
+    get_archive_status, list_archivable_dates, list_archives,
+};
+use crate::lexicon::{get_lexicon_category, get_lexicon_index, search_lexicon};
+use crate::perset::{
+    create_main_preset, create_preset, delete_main_preset, delete_preset, delete_preset_preview,
+    get_main_preset, get_preset, list_main_presets, list_presets, rename_preset,
+    update_main_preset, update_preset, update_preset_preview,
+};
+use crate::snippet::{
+    create_snippet, delete_snippet, delete_snippet_preview, get_snippet, list_snippets,
+    rename_snippet, update_snippet, update_snippet_preview,
+};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -37,6 +59,7 @@ pub struct AppState {
     pub gallery_dir: PathBuf,
     pub lexicon: Option<Arc<Lexicon>>,
     pub nai_client: Arc<NaiClient>,
+    pub archive_state: ArchiveState,
 }
 
 pub async fn serve(cfg: ServerConfig) -> Result<()> {
@@ -63,6 +86,7 @@ pub async fn serve(cfg: ServerConfig) -> Result<()> {
         gallery_dir: cfg.gallery_dir.clone(),
         lexicon,
         nai_client: client,
+        archive_state: ArchiveState::new(),
     };
 
     // API 路由都放在 /api 前缀下
@@ -120,6 +144,7 @@ pub async fn serve(cfg: ServerConfig) -> Result<()> {
         .route("/archives", get(list_archives).post(create_archive))
         .route("/archives/dates", get(list_archivable_dates))
         .route("/archives/selected", post(create_archive_selected))
+        .route("/archives/status", get(get_archive_status))
         .route(
             "/archives/{name}",
             get(download_archive).delete(delete_archive),
@@ -132,10 +157,14 @@ pub async fn serve(cfg: ServerConfig) -> Result<()> {
         .with_state(state.clone());
 
     if let Some(static_dir) = cfg.static_dir.clone() {
-        router = router.fallback_service(ServeDir::new(static_dir));
+        router = router.fallback_service(
+            ServiceBuilder::new()
+                .layer(axum::middleware::from_fn(index_cache_control))
+                .service(ServeDir::new(static_dir)),
+        );
     }
+
     router = router.nest_service("/gallery", ServeDir::new(cfg.gallery_dir.clone()));
-    // 添加预览图服务
     router = router.nest_service(
         "/previews",
         ServeDir::new(state.storage.preview_dir().clone()),
@@ -149,6 +178,24 @@ pub async fn serve(cfg: ServerConfig) -> Result<()> {
     .await?;
 
     Ok(())
+}
+
+async fn index_cache_control(req: Request<Body>, next: Next) -> Response {
+    let path = req.uri().path().to_string();
+    let mut response = next.run(req).await;
+
+    let cache_value = if path.contains("/assets/") {
+        "public, max-age=31536000, immutable"
+    } else if path.ends_with(".html") || path == "/" {
+        "no-cache, no-store, must-revalidate"
+    } else {
+        "no-cache"
+    };
+
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_str(cache_value).unwrap());
+    response
 }
 
 async fn health() -> &'static str {
@@ -304,594 +351,16 @@ async fn delete_records_batch(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct SnippetQuery {
-    q: Option<String>,
-    category: Option<String>,
-    #[serde(default = "default_limit")]
-    limit: usize,
-    #[serde(default)]
-    offset: usize,
-}
-
-fn default_limit() -> usize {
-    20
-}
-
-async fn list_snippets(
-    State(state): State<AppState>,
-    Query(q): Query<SnippetQuery>,
-) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || {
-        storage.list_snippets(q.q.as_deref(), q.category.as_deref(), q.offset, q.limit)
-    })
-    .await
-    {
-        Ok(Ok(page)) => Json(page).into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateSnippetPayload {
-    name: String,
-    category: String,
-    content: String,
-    #[serde(default)]
-    tags: Vec<String>,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    preview_base64: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct SnippetResponse {
-    id: String,
-    name: String,
-    category: String,
-}
-
-async fn create_snippet(
-    State(state): State<AppState>,
-    Json(payload): Json<CreateSnippetPayload>,
-) -> impl IntoResponse {
-    let mut snippet = match Snippet::new(payload.name, payload.category, payload.content) {
-        Ok(s) => s,
-        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-    };
-    snippet.tags = payload.tags;
-    snippet.description = payload.description;
-
-    let preview_bytes = match payload.preview_base64 {
-        Some(b64) => match BASE64_STANDARD.decode(b64) {
-            Ok(bytes) => Some(bytes),
-            Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        },
-        None => None,
-    };
-
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || {
-        storage.upsert_snippet(snippet, preview_bytes.as_deref())
-    })
-    .await
-    {
-        Ok(Ok(saved)) => {
-            let body = Json(SnippetResponse {
-                id: saved.id.to_string(),
-                name: saved.name,
-                category: saved.category,
-            });
-            (StatusCode::CREATED, body).into_response()
-        }
-        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct UpdateSnippetPayload {
-    name: Option<String>,
-    category: Option<String>,
-    content: Option<String>,
-    tags: Option<Vec<String>>,
-    description: Option<String>,
-    preview_base64: Option<String>,
-}
-
-async fn update_snippet(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(payload): Json<UpdateSnippetPayload>,
-) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    let storage_for_get = Arc::clone(&storage);
-
-    // First get the existing snippet
-    let existing = match tokio::task::spawn_blocking(move || storage_for_get.get_snippet(id)).await
-    {
-        Ok(Ok(Some(snippet))) => snippet,
-        Ok(Ok(None)) => return (StatusCode::NOT_FOUND, "snippet not found").into_response(),
-        Ok(Err(err)) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
-        }
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    };
-
-    // Update fields
-    let mut snippet = existing;
-    if let Some(name) = payload.name {
-        snippet.name = name;
-    }
-    if let Some(category) = payload.category {
-        snippet.category = category;
-    }
-    if let Some(content) = payload.content {
-        snippet.content = content;
-    }
-    if let Some(tags) = payload.tags {
-        snippet.tags = tags;
-    }
-    if payload.description.is_some() {
-        snippet.description = payload.description;
-    }
-
-    let preview_bytes = match payload.preview_base64 {
-        Some(b64) => match BASE64_STANDARD.decode(b64) {
-            Ok(bytes) => Some(bytes),
-            Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        },
-        None => None,
-    };
-
-    match tokio::task::spawn_blocking(move || {
-        storage.upsert_snippet(snippet, preview_bytes.as_deref())
-    })
-    .await
-    {
-        Ok(Ok(saved)) => Json(saved).into_response(),
-        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-async fn get_snippet(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.get_snippet(id)).await {
-        Ok(Ok(Some(snippet))) => Json(snippet).into_response(),
-        Ok(Ok(None)) => (StatusCode::NOT_FOUND, "snippet not found").into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-async fn delete_snippet(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.delete_snippet(id)).await {
-        Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Ok(false)) => (StatusCode::NOT_FOUND, "snippet not found").into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
+/// Snippet / Preset shared payloads
 
 #[derive(Debug, Deserialize)]
 struct UpdatePreviewPayload {
     preview_base64: String,
 }
 
-async fn update_snippet_preview(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(payload): Json<UpdatePreviewPayload>,
-) -> impl IntoResponse {
-    let preview_bytes = match BASE64_STANDARD.decode(&payload.preview_base64) {
-        Ok(bytes) => bytes,
-        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-    };
-
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.update_snippet_preview(id, &preview_bytes))
-        .await
-    {
-        Ok(Ok(saved)) => Json(saved).into_response(),
-        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-async fn delete_snippet_preview(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.delete_snippet_preview(id)).await {
-        Ok(Ok(saved)) => Json(saved).into_response(),
-        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct RenamePayload {
     name: String,
-}
-
-async fn rename_snippet(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(payload): Json<RenamePayload>,
-) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.rename_snippet(id, payload.name)).await {
-        Ok(Ok(saved)) => Json(saved).into_response(),
-        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct PresetQuery {
-    #[serde(default = "default_limit")]
-    limit: usize,
-    #[serde(default)]
-    offset: usize,
-}
-
-async fn list_presets(
-    State(state): State<AppState>,
-    Query(q): Query<PresetQuery>,
-) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.list_presets(q.offset, q.limit)).await {
-        Ok(Ok(page)) => Json(page).into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct CreatePresetPayload {
-    name: String,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    before: Option<String>,
-    #[serde(default)]
-    after: Option<String>,
-    #[serde(default)]
-    replace: Option<String>,
-    #[serde(default)]
-    uc_before: Option<String>,
-    #[serde(default)]
-    uc_after: Option<String>,
-    #[serde(default)]
-    uc_replace: Option<String>,
-    #[serde(default)]
-    preview_base64: Option<String>,
-}
-
-async fn create_preset(
-    State(state): State<AppState>,
-    Json(payload): Json<CreatePresetPayload>,
-) -> impl IntoResponse {
-    let mut preset = CharacterPreset::new(payload.name);
-    preset.description = payload.description;
-    preset.before = payload.before;
-    preset.after = payload.after;
-    preset.replace = payload.replace;
-    preset.uc_before = payload.uc_before;
-    preset.uc_after = payload.uc_after;
-    preset.uc_replace = payload.uc_replace;
-
-    let preview_bytes = match payload.preview_base64 {
-        Some(b64) => match BASE64_STANDARD.decode(b64) {
-            Ok(bytes) => Some(bytes),
-            Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        },
-        None => None,
-    };
-
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || {
-        storage.upsert_preset_with_preview(preset, preview_bytes.as_deref())
-    })
-    .await
-    {
-        Ok(Ok(saved)) => Json(saved).into_response(),
-        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-async fn get_preset(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.get_preset(id)).await {
-        Ok(Ok(Some(preset))) => Json(preset).into_response(),
-        Ok(Ok(None)) => (StatusCode::NOT_FOUND, "preset not found").into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct UpdatePresetPayload {
-    name: Option<String>,
-    description: Option<String>,
-    before: Option<String>,
-    after: Option<String>,
-    replace: Option<String>,
-    uc_before: Option<String>,
-    uc_after: Option<String>,
-    uc_replace: Option<String>,
-    preview_base64: Option<String>,
-}
-
-async fn update_preset(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(payload): Json<UpdatePresetPayload>,
-) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    let storage_for_get = Arc::clone(&storage);
-
-    // First get the existing preset
-    let existing = match tokio::task::spawn_blocking(move || storage_for_get.get_preset(id)).await {
-        Ok(Ok(Some(preset))) => preset,
-        Ok(Ok(None)) => return (StatusCode::NOT_FOUND, "preset not found").into_response(),
-        Ok(Err(err)) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
-        }
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    };
-
-    // Update fields
-    let mut preset = existing;
-    if let Some(name) = payload.name {
-        preset.name = name;
-    }
-    if payload.description.is_some() {
-        preset.description = payload.description;
-    }
-    if payload.before.is_some() {
-        preset.before = payload.before;
-    }
-    if payload.after.is_some() {
-        preset.after = payload.after;
-    }
-    if payload.replace.is_some() {
-        preset.replace = payload.replace;
-    }
-    if payload.uc_before.is_some() {
-        preset.uc_before = payload.uc_before;
-    }
-    if payload.uc_after.is_some() {
-        preset.uc_after = payload.uc_after;
-    }
-    if payload.uc_replace.is_some() {
-        preset.uc_replace = payload.uc_replace;
-    }
-    preset.updated_at = chrono::Utc::now();
-
-    let preview_bytes = match payload.preview_base64 {
-        Some(b64) => match BASE64_STANDARD.decode(b64) {
-            Ok(bytes) => Some(bytes),
-            Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        },
-        None => None,
-    };
-
-    match tokio::task::spawn_blocking(move || {
-        storage.upsert_preset_with_preview(preset, preview_bytes.as_deref())
-    })
-    .await
-    {
-        Ok(Ok(saved)) => Json(saved).into_response(),
-        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-async fn update_preset_preview(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(payload): Json<UpdatePreviewPayload>,
-) -> impl IntoResponse {
-    let preview_bytes = match BASE64_STANDARD.decode(&payload.preview_base64) {
-        Ok(bytes) => bytes,
-        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-    };
-
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.update_preset_preview(id, &preview_bytes))
-        .await
-    {
-        Ok(Ok(saved)) => Json(saved).into_response(),
-        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-async fn delete_preset_preview(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.delete_preset_preview(id)).await {
-        Ok(Ok(saved)) => Json(saved).into_response(),
-        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-async fn delete_preset(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.delete_preset(id)).await {
-        Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Ok(false)) => (StatusCode::NOT_FOUND, "preset not found").into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-async fn rename_preset(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(payload): Json<RenamePayload>,
-) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.rename_preset(id, payload.name)).await {
-        Ok(Ok(saved)) => Json(saved).into_response(),
-        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-// ============== Main Presets ==============
-
-async fn list_main_presets(
-    State(state): State<AppState>,
-    Query(q): Query<PresetQuery>,
-) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.list_main_presets(q.offset, q.limit)).await {
-        Ok(Ok(page)) => Json(page).into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateMainPresetPayload {
-    name: String,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    before: Option<String>,
-    #[serde(default)]
-    after: Option<String>,
-    #[serde(default)]
-    replace: Option<String>,
-    #[serde(default)]
-    uc_before: Option<String>,
-    #[serde(default)]
-    uc_after: Option<String>,
-    #[serde(default)]
-    uc_replace: Option<String>,
-}
-
-async fn create_main_preset(
-    State(state): State<AppState>,
-    Json(payload): Json<CreateMainPresetPayload>,
-) -> impl IntoResponse {
-    let mut preset = MainPreset::new(payload.name);
-    preset.description = payload.description;
-    preset.before = payload.before;
-    preset.after = payload.after;
-    preset.replace = payload.replace;
-    preset.uc_before = payload.uc_before;
-    preset.uc_after = payload.uc_after;
-    preset.uc_replace = payload.uc_replace;
-
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.upsert_main_preset(preset)).await {
-        Ok(Ok(saved)) => (StatusCode::CREATED, Json(saved)).into_response(),
-        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-async fn get_main_preset(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.get_main_preset(id)).await {
-        Ok(Ok(Some(preset))) => Json(preset).into_response(),
-        Ok(Ok(None)) => (StatusCode::NOT_FOUND, "main preset not found").into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct UpdateMainPresetPayload {
-    name: Option<String>,
-    description: Option<String>,
-    before: Option<String>,
-    after: Option<String>,
-    replace: Option<String>,
-    uc_before: Option<String>,
-    uc_after: Option<String>,
-    uc_replace: Option<String>,
-}
-
-async fn update_main_preset(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(payload): Json<UpdateMainPresetPayload>,
-) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    let storage_for_get = Arc::clone(&storage);
-
-    // First get the existing preset
-    let existing = match tokio::task::spawn_blocking(move || storage_for_get.get_main_preset(id))
-        .await
-    {
-        Ok(Ok(Some(preset))) => preset,
-        Ok(Ok(None)) => return (StatusCode::NOT_FOUND, "main preset not found").into_response(),
-        Ok(Err(err)) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
-        }
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    };
-
-    // Update fields
-    let mut preset = existing;
-    if let Some(name) = payload.name {
-        preset.name = name;
-    }
-    if payload.description.is_some() {
-        preset.description = payload.description;
-    }
-    if payload.before.is_some() {
-        preset.before = payload.before;
-    }
-    if payload.after.is_some() {
-        preset.after = payload.after;
-    }
-    if payload.replace.is_some() {
-        preset.replace = payload.replace;
-    }
-    if payload.uc_before.is_some() {
-        preset.uc_before = payload.uc_before;
-    }
-    if payload.uc_after.is_some() {
-        preset.uc_after = payload.uc_after;
-    }
-    if payload.uc_replace.is_some() {
-        preset.uc_replace = payload.uc_replace;
-    }
-    preset.updated_at = chrono::Utc::now();
-
-    match tokio::task::spawn_blocking(move || storage.upsert_main_preset(preset)).await {
-        Ok(Ok(saved)) => Json(saved).into_response(),
-        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-async fn delete_main_preset(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || storage.delete_main_preset(id)).await {
-        Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Ok(false)) => (StatusCode::NOT_FOUND, "main preset not found").into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
 }
 
 // ============== Generation Settings ==============
@@ -981,6 +450,13 @@ impl TaskQueue {
     pub async fn status(&self, id: &Uuid) -> Option<TaskStatus> {
         let map = self.statuses.lock().await;
         map.get(id).cloned()
+    }
+
+    /// 检查是否有任务正在运行或待处理
+    pub async fn has_active_tasks(&self) -> bool {
+        let map = self.statuses.lock().await;
+        map.values()
+            .any(|s| matches!(s, TaskStatus::Pending | TaskStatus::Running))
     }
 }
 
@@ -1081,201 +557,6 @@ async fn dry_run_prompt(
     {
         Ok(Ok(result)) => Json(result).into_response(),
         Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-// ============== Lexicon API ==============
-
-async fn get_lexicon_index(State(state): State<AppState>) -> impl IntoResponse {
-    match &state.lexicon {
-        Some(lex) => Json(lex.get_index().clone()).into_response(),
-        None => (StatusCode::NOT_FOUND, "lexicon not loaded").into_response(),
-    }
-}
-
-async fn get_lexicon_category(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> impl IntoResponse {
-    match &state.lexicon {
-        Some(lex) => match lex.get_category(&name) {
-            Some(cat) => Json(cat.clone()).into_response(),
-            None => (StatusCode::NOT_FOUND, "category not found").into_response(),
-        },
-        None => (StatusCode::NOT_FOUND, "lexicon not loaded").into_response(),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct LexiconSearchQuery {
-    q: String,
-    #[serde(default = "default_search_limit")]
-    limit: usize,
-    #[serde(default)]
-    offset: usize,
-}
-
-fn default_search_limit() -> usize {
-    50
-}
-
-async fn search_lexicon(
-    State(state): State<AppState>,
-    Query(query): Query<LexiconSearchQuery>,
-) -> impl IntoResponse {
-    match &state.lexicon {
-        Some(lex) => {
-            let result = lex.search(&query.q, query.limit, query.offset);
-            Json(result).into_response()
-        }
-        None => (StatusCode::NOT_FOUND, "lexicon not loaded").into_response(),
-    }
-}
-
-// ============== Archive API ==============
-
-/// 列出所有归档文件
-async fn list_archives(State(state): State<AppState>) -> impl IntoResponse {
-    let gallery_dir = state.gallery_dir.clone();
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || {
-        let manager = ArchiveManager::new(&gallery_dir, &storage);
-        manager.list_archives()
-    })
-    .await
-    {
-        Ok(Ok(archives)) => Json(archives).into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-/// 列出所有可归档的日期
-async fn list_archivable_dates(State(state): State<AppState>) -> impl IntoResponse {
-    let gallery_dir = state.gallery_dir.clone();
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || {
-        let manager = ArchiveManager::new(&gallery_dir, &storage);
-        manager.list_archivable_dates()
-    })
-    .await
-    {
-        Ok(Ok(dates)) => Json(dates).into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-/// 创建归档：归档所有今天之前的日期
-async fn create_archive(State(state): State<AppState>) -> impl IntoResponse {
-    let gallery_dir = state.gallery_dir.clone();
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || {
-        let manager = ArchiveManager::new(&gallery_dir, &storage);
-        manager.create_archives()
-    })
-    .await
-    {
-        Ok(Ok(result)) => Json(result).into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateArchiveSelectedRequest {
-    dates: Vec<String>,
-}
-
-/// 创建归档：仅归档选定的日期
-async fn create_archive_selected(
-    State(state): State<AppState>,
-    Json(req): Json<CreateArchiveSelectedRequest>,
-) -> impl IntoResponse {
-    let gallery_dir = state.gallery_dir.clone();
-    let storage = Arc::clone(&state.storage);
-    let dates = req.dates;
-    match tokio::task::spawn_blocking(move || {
-        let manager = ArchiveManager::new(&gallery_dir, &storage);
-        manager.create_archives_for_dates(&dates)
-    })
-    .await
-    {
-        Ok(Ok(result)) => Json(result).into_response(),
-        Ok(Err(err)) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-/// 下载归档文件
-async fn download_archive(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> impl IntoResponse {
-    use axum::body::Body;
-    use axum::http::header;
-    use tokio_util::io::ReaderStream;
-
-    let gallery_dir = state.gallery_dir.clone();
-    let storage = Arc::clone(&state.storage);
-    let manager = ArchiveManager::new(&gallery_dir, &storage);
-
-    let archive_path = match manager.get_archive_path(&name) {
-        Ok(path) => path,
-        Err(err) => {
-            let status = if err.to_string().contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::BAD_REQUEST
-            };
-            return (status, err.to_string()).into_response();
-        }
-    };
-
-    match tokio::fs::File::open(&archive_path).await {
-        Ok(file) => {
-            let stream = ReaderStream::new(file);
-            let body = Body::from_stream(stream);
-
-            let headers = [
-                (header::CONTENT_TYPE, "application/zip".to_string()),
-                (
-                    header::CONTENT_DISPOSITION,
-                    format!("attachment; filename=\"{}\"", name),
-                ),
-            ];
-
-            (headers, body).into_response()
-        }
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-/// 删除归档文件
-async fn delete_archive(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> impl IntoResponse {
-    let gallery_dir = state.gallery_dir.clone();
-    let storage = Arc::clone(&state.storage);
-
-    match tokio::task::spawn_blocking(move || {
-        let manager = ArchiveManager::new(&gallery_dir, &storage);
-        manager.delete_archive(&name)
-    })
-    .await
-    {
-        Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Ok(false)) => StatusCode::NOT_FOUND.into_response(),
-        Ok(Err(err)) => {
-            let status = if err.to_string().contains("invalid") {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            (status, err.to_string()).into_response()
-        }
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
 }
