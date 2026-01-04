@@ -1127,15 +1127,21 @@ impl PromptProcessor {
     ) -> CoreResult<DryRunResult> {
         let resolver = SnippetResolver::new(Arc::clone(&self.storage));
 
-        // 步骤 1: 应用主预设
-        let positive_after_preset = main_preset.apply_positive(raw_positive);
-        let negative_after_preset = main_preset.apply_negative(raw_negative);
+        // 步骤 1: 剥离注释
+        let positive_no_comment = PromptParser::strip_comments(raw_positive)
+            .map_err(|e| anyhow!("strip comments error: {}", e))?;
+        let negative_no_comment = PromptParser::strip_comments(raw_negative)
+            .map_err(|e| anyhow!("strip comments error: {}", e))?;
 
-        // 步骤 2: 展开 snippet
+        // 步骤 2: 应用主预设
+        let positive_after_preset = main_preset.apply_positive(&positive_no_comment);
+        let negative_after_preset = main_preset.apply_negative(&negative_no_comment);
+
+        // 步骤 3: 展开 snippet
         let final_positive = resolver.expand(&positive_after_preset)?;
         let final_negative = resolver.expand(&negative_after_preset)?;
 
-        // 步骤 3: 处理角色提示词
+        // 步骤 4: 处理角色提示词
         let mut processed_chars = Vec::new();
         for slot in character_slots {
             if !slot.enabled {
@@ -1145,8 +1151,14 @@ impl PromptProcessor {
                 continue;
             }
 
-            let mut char_positive = slot.prompt.clone();
-            let mut char_negative = slot.uc.clone();
+            // 先剥离注释
+            let char_positive_no_comment = PromptParser::strip_comments(&slot.prompt)
+                .map_err(|e| anyhow!("strip comments error: {}", e))?;
+            let char_negative_no_comment = PromptParser::strip_comments(&slot.uc)
+                .map_err(|e| anyhow!("strip comments error: {}", e))?;
+
+            let mut char_positive = char_positive_no_comment;
+            let mut char_negative = char_negative_no_comment;
 
             // 应用角色预设
             if let Some(preset_id) = slot.preset_id {
@@ -1233,26 +1245,39 @@ impl TaskExecutor {
         let character_prompts = task.params.character_prompts.clone();
 
         // 使用 PromptProcessor 处理提示词
-        // 处理链：注入主预设 -> 展开 snippet
+        // 处理链：剥离注释 -> 注入主预设 -> 展开 snippet
         let (expanded_prompt, expanded_negative, expanded_character_prompts) =
             tokio::task::spawn_blocking(move || {
                 let processor = PromptProcessor::new(storage_for_process);
                 let resolver = SnippetResolver::new(Arc::clone(&processor.storage));
 
-                // 步骤 1: 应用主预设
-                let positive_after_preset = main_preset.apply_positive(&raw_prompt);
-                let negative_after_preset = main_preset.apply_negative(&raw_negative);
+                // 步骤 1: 剥离注释
+                let positive_no_comment = PromptParser::strip_comments(&raw_prompt)
+                    .map_err(|e| anyhow!("strip comments error: {}", e))?;
+                let negative_no_comment = PromptParser::strip_comments(&raw_negative)
+                    .map_err(|e| anyhow!("strip comments error: {}", e))?;
 
-                // 步骤 2: 展开 snippet
+                // 步骤 2: 应用主预设
+                let positive_after_preset = main_preset.apply_positive(&positive_no_comment);
+                let negative_after_preset = main_preset.apply_negative(&negative_no_comment);
+
+                // 步骤 3: 展开 snippet
                 let final_positive = resolver.expand(&positive_after_preset)?;
                 let final_negative = resolver.expand(&negative_after_preset)?;
 
-                // 步骤 3: 处理角色提示词
+                // 步骤 4: 处理角色提示词
                 let expanded_chars = if let Some(chars) = character_prompts {
                     let mut result = Vec::with_capacity(chars.len());
                     for mut char_prompt in chars {
-                        char_prompt.prompt = resolver.expand(&char_prompt.prompt)?;
-                        char_prompt.uc = resolver.expand(&char_prompt.uc)?;
+                        // 先剥离注释
+                        let prompt_no_comment =
+                            PromptParser::strip_comments(&char_prompt.prompt)
+                                .map_err(|e| anyhow!("strip comments error: {}", e))?;
+                        let uc_no_comment = PromptParser::strip_comments(&char_prompt.uc)
+                            .map_err(|e| anyhow!("strip comments error: {}", e))?;
+                        // 再展开 snippet
+                        char_prompt.prompt = resolver.expand(&prompt_no_comment)?;
+                        char_prompt.uc = resolver.expand(&uc_no_comment)?;
                         result.push(char_prompt);
                     }
                     Some(result)
