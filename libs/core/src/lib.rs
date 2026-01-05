@@ -1533,7 +1533,6 @@ impl<'a> ArchiveManager<'a> {
 
     /// 创建归档：仅归档指定的日期
     pub async fn create_archives_for_dates(&self, dates: &[String]) -> CoreResult<ArchiveResult> {
-        use std::io::{Read, Write};
         use zip::write::SimpleFileOptions;
 
         if dates.is_empty() {
@@ -1601,7 +1600,6 @@ impl<'a> ArchiveManager<'a> {
                 let file = fs::File::create(&archive_path)?;
                 let mut zip = zip::ZipWriter::new(file);
 
-                // 使用 Zstd
                 let options = SimpleFileOptions::default()
                     .compression_method(zip::CompressionMethod::Zstd)
                     .compression_level(Some(19));
@@ -1615,10 +1613,9 @@ impl<'a> ArchiveManager<'a> {
                         let zip_path = format!("{}/{}", date_str, file_name);
 
                         zip.start_file(&zip_path, options)?;
-                        let mut f = fs::File::open(&file_path)?;
-                        let mut buffer = Vec::new();
-                        f.read_to_end(&mut buffer)?;
-                        zip.write_all(&buffer)?;
+                        let f = fs::File::open(&file_path)?;
+                        let mut reader = std::io::BufReader::with_capacity(128 * 1024, f);
+                        std::io::copy(&mut reader, &mut zip)?;
                     }
                 }
 
