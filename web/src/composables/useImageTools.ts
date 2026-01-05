@@ -12,12 +12,16 @@ export interface UseImageToolsReturn {
   fetchImageAsBlob: (url: string) => Promise<Blob>;
   /** 去除图片元数据 */
   removeMetadata: (blob: Blob) => Promise<Blob>;
+  /** 转换为 JPG 格式 */
+  convertToJpg: (blob: Blob, quality?: number) => Promise<Blob>;
   /** 下载 Blob 为文件 */
   downloadBlob: (blob: Blob, filename: string) => void;
   /** 下载图片原图 */
   downloadImage: (url: string, filename: string) => Promise<void>;
   /** 下载去除元数据的图片 */
   downloadImageClean: (url: string, filename: string) => Promise<void>;
+  /** 下载图片为 JPG 格式 */
+  downloadImageAsJpg: (url: string, filename: string, quality?: number) => Promise<void>;
   /** 复制图片到剪贴板（去除元数据） */
   copyImageToClipboard: (url: string) => Promise<void>;
 }
@@ -69,6 +73,48 @@ export function useImageTools(): UseImageToolsReturn {
   }
 
   /**
+   * 转换为 JPG 格式
+   * @param blob 原始图片 Blob
+   * @param quality JPG 质量，0-1 之间，默认 0.92
+   */
+  function convertToJpg(blob: Blob, quality: number = 0.92): Promise<Blob> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('Failed to get canvas context'));
+          return;
+        }
+        // 填充白色背景（JPG 不支持透明）
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+        canvas.toBlob(
+          (newBlob) => {
+            if (newBlob) {
+              resolve(newBlob);
+            } else {
+              reject(new Error('Failed to create blob'));
+            }
+          },
+          'image/jpeg',
+          quality,
+        );
+        URL.revokeObjectURL(img.src);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(img.src);
+        reject(new Error('Failed to load image'));
+      };
+      img.src = URL.createObjectURL(blob);
+    });
+  }
+
+  /**
    * 下载 Blob 为文件
    */
   function downloadBlob(blob: Blob, filename: string): void {
@@ -100,6 +146,19 @@ export function useImageTools(): UseImageToolsReturn {
   }
 
   /**
+   * 下载图片为 JPG 格式
+   */
+  async function downloadImageAsJpg(
+    url: string,
+    filename: string,
+    quality: number = 0.92,
+  ): Promise<void> {
+    const blob = await fetchImageAsBlob(url);
+    const jpgBlob = await convertToJpg(blob, quality);
+    downloadBlob(jpgBlob, filename);
+  }
+
+  /**
    * 复制图片到剪贴板（去除元数据）
    */
   async function copyImageToClipboard(url: string): Promise<void> {
@@ -111,9 +170,11 @@ export function useImageTools(): UseImageToolsReturn {
   return {
     fetchImageAsBlob,
     removeMetadata,
+    convertToJpg,
     downloadBlob,
     downloadImage,
     downloadImageClean,
+    downloadImageAsJpg,
     copyImageToClipboard,
   };
 }

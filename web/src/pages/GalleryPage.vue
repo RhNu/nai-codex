@@ -32,7 +32,8 @@ type GalleryItem = {
 
 const $q = useQuasar();
 const { copy } = useClipboard();
-const { fetchImageAsBlob, removeMetadata, downloadBlob, copyImageToClipboard } = useImageTools();
+const { fetchImageAsBlob, removeMetadata, downloadBlob, copyImageToClipboard, downloadImageAsJpg } =
+  useImageTools();
 
 const search = ref('');
 const images = ref<GalleryItem[]>([]);
@@ -229,6 +230,18 @@ async function downloadWithoutMetadata() {
     const blob = await fetchImageAsBlob(selectedImage.value.url);
     const cleanBlob = await removeMetadata(blob);
     downloadBlob(cleanBlob, `${selectedImage.value.seed}_clean.png`);
+    $q.notify({ type: 'positive', message: '下载已开始' });
+  } catch (err) {
+    console.error(err);
+    $q.notify({ type: 'negative', message: '处理失败' });
+  }
+}
+
+// 下载为 JPG 格式
+async function downloadAsJpg() {
+  if (!selectedImage.value) return;
+  try {
+    await downloadImageAsJpg(selectedImage.value.url, `${selectedImage.value.seed}.jpg`);
     $q.notify({ type: 'positive', message: '下载已开始' });
   } catch (err) {
     console.error(err);
@@ -753,6 +766,9 @@ async function load() {
           </q-btn>
           <q-btn dense flat icon="image_not_supported" @click="downloadWithoutMetadata">
             <q-tooltip>下载无元数据图片</q-tooltip>
+          </q-btn>
+          <q-btn dense flat icon="image" @click="downloadAsJpg">
+            <q-tooltip>下载为 JPG（更小体积）</q-tooltip>
           </q-btn>
           <q-btn dense flat icon="file_copy" @click="copyWithoutMetadata">
             <q-tooltip>复制无元数据图片</q-tooltip>
