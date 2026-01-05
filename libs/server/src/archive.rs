@@ -81,32 +81,18 @@ struct ArchiveStartedResponse {
 
 /// 列出所有归档文件
 pub async fn list_archives(State(state): State<AppState>) -> impl IntoResponse {
-    let gallery_dir = state.gallery_dir.clone();
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || {
-        let manager = ArchiveManager::new(&gallery_dir, &storage);
-        manager.list_archives()
-    })
-    .await
-    {
-        Ok(Ok(archives)) => Json(archives).into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    let manager = ArchiveManager::new(&state.gallery_dir, &state.storage);
+    match manager.list_archives().await {
+        Ok(archives) => Json(archives).into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
 }
 
 /// 列出所有可归档的日期
 pub async fn list_archivable_dates(State(state): State<AppState>) -> impl IntoResponse {
-    let gallery_dir = state.gallery_dir.clone();
-    let storage = Arc::clone(&state.storage);
-    match tokio::task::spawn_blocking(move || {
-        let manager = ArchiveManager::new(&gallery_dir, &storage);
-        manager.list_archivable_dates()
-    })
-    .await
-    {
-        Ok(Ok(dates)) => Json(dates).into_response(),
-        Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    let manager = ArchiveManager::new(&state.gallery_dir, &state.storage);
+    match manager.list_archivable_dates().await {
+        Ok(dates) => Json(dates).into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
 }
@@ -145,14 +131,11 @@ pub async fn create_archive(State(state): State<AppState>) -> impl IntoResponse 
     let archive_state = state.archive_state.clone();
 
     tokio::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || {
-            let manager = ArchiveManager::new(&gallery_dir, &storage);
-            manager.create_archives()
-        })
-        .await;
+        let manager = ArchiveManager::new(&gallery_dir, &storage);
+        let result = manager.create_archives().await;
 
         match result {
-            Ok(Ok(res)) => {
+            Ok(res) => {
                 tracing::info!(
                     archives = res.archives.len(),
                     deleted = res.deleted_records,
@@ -162,12 +145,8 @@ pub async fn create_archive(State(state): State<AppState>) -> impl IntoResponse 
                     .set_completed(res.archives, res.deleted_records)
                     .await;
             }
-            Ok(Err(err)) => {
-                tracing::error!(error = %err, "archive task failed");
-                archive_state.set_failed(err.to_string()).await;
-            }
             Err(err) => {
-                tracing::error!(error = %err, "archive task panicked");
+                tracing::error!(error = %err, "archive task failed");
                 archive_state.set_failed(err.to_string()).await;
             }
         }
@@ -223,14 +202,11 @@ pub async fn create_archive_selected(
     let archive_state = state.archive_state.clone();
 
     tokio::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || {
-            let manager = ArchiveManager::new(&gallery_dir, &storage);
-            manager.create_archives_for_dates(&dates)
-        })
-        .await;
+        let manager = ArchiveManager::new(&gallery_dir, &storage);
+        let result = manager.create_archives_for_dates(&dates).await;
 
         match result {
-            Ok(Ok(res)) => {
+            Ok(res) => {
                 tracing::info!(
                     archives = res.archives.len(),
                     deleted = res.deleted_records,
@@ -240,12 +216,8 @@ pub async fn create_archive_selected(
                     .set_completed(res.archives, res.deleted_records)
                     .await;
             }
-            Ok(Err(err)) => {
-                tracing::error!(error = %err, "archive task failed");
-                archive_state.set_failed(err.to_string()).await;
-            }
             Err(err) => {
-                tracing::error!(error = %err, "archive task panicked");
+                tracing::error!(error = %err, "archive task failed");
                 archive_state.set_failed(err.to_string()).await;
             }
         }
@@ -309,18 +281,12 @@ pub async fn delete_archive(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let gallery_dir = state.gallery_dir.clone();
-    let storage = Arc::clone(&state.storage);
+    let manager = ArchiveManager::new(&state.gallery_dir, &state.storage);
 
-    match tokio::task::spawn_blocking(move || {
-        let manager = ArchiveManager::new(&gallery_dir, &storage);
-        manager.delete_archive(&name)
-    })
-    .await
-    {
-        Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Ok(false)) => StatusCode::NOT_FOUND.into_response(),
-        Ok(Err(err)) => {
+    match manager.delete_archive(&name).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => {
             let status = if err.to_string().contains("invalid") {
                 StatusCode::BAD_REQUEST
             } else {
@@ -328,6 +294,5 @@ pub async fn delete_archive(
             };
             (status, err.to_string()).into_response()
         }
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
 }
