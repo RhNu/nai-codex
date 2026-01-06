@@ -315,6 +315,7 @@ dependencies = [
  "chrono",
  "codex-api",
  "codex-core",
+ "rand",
  "serde",
  "serde_json",
  "tokio",

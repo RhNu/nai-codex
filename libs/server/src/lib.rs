@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Result, anyhow};
 use axum::{
@@ -16,6 +16,7 @@ use codex_core::{
     GenerationRecord, HighlightSpan, LastGenerationSettings, Lexicon, MainPresetSettings,
     PromptParser, PromptProcessor, TaskExecutor,
 };
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, mpsc};
 use tower::ServiceBuilder;
@@ -265,8 +266,6 @@ async fn create_task(
     if let Some(params) = payload.params {
         task.params = params;
     }
-    // preset_id 已废弃，保留兼容性但不再使用
-    // 角色预设现在由前端构建 character_prompts 时直接处理
 
     let id = task.id;
     if let Err(err) = state.queue.submit(task).await {
@@ -389,6 +388,14 @@ async fn save_generation_settings(
     }
 }
 
+/// 生成随机延迟时间，基准3秒，有0.5秒的波动范围
+fn random_delay() -> Duration {
+    let mut rng = rand::rng();
+    let base_ms = 3000;
+    let bounce_ms = rng.random_range(-500..=500);
+    Duration::from_millis((base_ms + bounce_ms) as u64)
+}
+
 #[derive(Debug, Clone)]
 pub enum TaskStatus {
     Pending,
@@ -412,7 +419,16 @@ impl TaskQueue {
         let storage_clone = Arc::clone(&storage);
         let gallery_clone = gallery.clone();
         tokio::spawn(async move {
+            let mut is_first_task = true;
             while let Some(task) = rx.recv().await {
+                // 任务之间添加随机延迟（首个任务除外）
+                if !is_first_task {
+                    let delay = random_delay();
+                    tracing::debug!("waiting {:?} before next task", delay);
+                    tokio::time::sleep(delay).await;
+                }
+                is_first_task = false;
+
                 {
                     let mut map = status_clone.lock().await;
                     map.insert(task.id, TaskStatus::Running);
