@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -925,6 +926,31 @@ impl CoreStorage {
         records.reverse();
         records.truncate(limit);
         Ok(records)
+    }
+
+    pub fn list_record_ids_by_dates(&self, dates: &HashSet<String>) -> CoreResult<Vec<Uuid>> {
+        if dates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(TABLE_RECORDS)?;
+        let mut ids = Vec::new();
+
+        for entry in table.iter()? {
+            let (_, value) = entry?;
+            let rec: GenerationRecord = serde_json::from_str(&value.value())?;
+            let record_date = rec
+                .created_at
+                .with_timezone(&Local)
+                .format("%Y-%m-%d")
+                .to_string();
+            if dates.contains(&record_date) {
+                ids.push(rec.id);
+            }
+        }
+
+        Ok(ids)
     }
 
     pub fn list_presets(&self, offset: usize, limit: usize) -> CoreResult<Page<CharacterPreset>> {

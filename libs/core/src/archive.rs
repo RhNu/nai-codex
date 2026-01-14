@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -7,8 +8,6 @@ use anyhow::anyhow;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use tracing::info;
-use uuid::Uuid;
-
 use crate::{CoreResult, CoreStorage};
 
 /// 单个归档文件信息
@@ -167,7 +166,7 @@ impl<'a> ArchiveManager<'a> {
         let dates = dates.to_vec();
 
         // 在阻塞线程中执行压缩操作
-        let (created_archives, dates_to_archive) = tokio::task::spawn_blocking(move || {
+        let (created_archives, archived_dates, skipped_existing) = tokio::task::spawn_blocking(move || {
             // 验证并收集需要归档的日期文件夹
             let mut dirs_to_archive: Vec<PathBuf> = Vec::new();
             if !gallery_dir.exists() {
@@ -199,13 +198,9 @@ impl<'a> ArchiveManager<'a> {
             dirs_to_archive.sort();
 
             // 收集实际要归档的日期
-            let dates_to_archive: Vec<String> = dirs_to_archive
-                .iter()
-                .filter_map(|p| p.file_name())
-                .map(|n| n.to_string_lossy().to_string())
-                .collect();
-
             let mut created_archives = Vec::new();
+            let mut archived_dates = Vec::new();
+            let mut skipped_existing = Vec::new();
 
             // 为每个日期创建单独的压缩包
             for dir in &dirs_to_archive {
@@ -215,7 +210,8 @@ impl<'a> ArchiveManager<'a> {
 
                 // 如果归档文件已存在，跳过该日期
                 if archive_path.exists() {
-                    info!(archive=%archive_name, "archive already exists, skipping");
+                    info!(archive=%archive_name, date=%date_str, "archive already exists, skipping");
+                    skipped_existing.push(date_str);
                     continue;
                 }
 
@@ -257,17 +253,25 @@ impl<'a> ArchiveManager<'a> {
                     created_at: created_dt.to_rfc3339(),
                 });
 
+                archived_dates.push(date_str.clone());
                 info!(date=%date_str, "archived date folder");
             }
 
-            Ok::<_, anyhow::Error>((created_archives, dates_to_archive))
+            Ok::<_, anyhow::Error>((created_archives, archived_dates, skipped_existing))
         })
         .await
         .map_err(|e| anyhow!("join error: {e}"))??;
 
+        if !skipped_existing.is_empty() {
+            info!(
+                skipped=?skipped_existing,
+                "archives skipped because they already exist"
+            );
+        }
+
         // 删除数据库中对应日期的记录
-        let deleted_records = self.delete_records_by_dates(&dates_to_archive).await?;
-        info!(deleted=%deleted_records, dates=?dates_to_archive, "deleted archived records from database");
+        let deleted_records = self.delete_records_by_dates(&archived_dates).await?;
+        info!(deleted=%deleted_records, dates=?archived_dates, "deleted archived records from database");
 
         Ok(ArchiveResult {
             archives: created_archives,
@@ -324,22 +328,18 @@ impl<'a> ArchiveManager<'a> {
 
     /// 删除指定日期范围内的所有记录（仅删除数据库记录）
     async fn delete_records_by_dates(&self, dates: &[String]) -> CoreResult<usize> {
+        if dates.is_empty() {
+            return Ok(0);
+        }
+
         let storage = self.storage.clone();
-        let dates = dates.to_vec();
+        let dates_set: HashSet<String> = dates.iter().cloned().collect();
 
         tokio::task::spawn_blocking(move || {
             // 获取所有记录
-            let records = storage.list_recent_records(10000)?;
+            let ids_to_delete = storage.list_record_ids_by_dates(&dates_set)?;
 
             // 找出需要删除的记录 ID
-            let ids_to_delete: Vec<Uuid> = records
-                .into_iter()
-                .filter(|r| {
-                    let record_date = r.created_at.format("%Y-%m-%d").to_string();
-                    dates.contains(&record_date)
-                })
-                .map(|r| r.id)
-                .collect();
 
             // 批量删除（不删除文件，因为文件已经被归档了）
             let mut deleted = 0;
