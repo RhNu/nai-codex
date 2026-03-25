@@ -2,6 +2,9 @@
 
 > Codex 顺便生成的文档，自用没保证准确喵。
 
+> **Warning**
+> 因为转向新的桌面版项目，本项目暂停开发。
+
 NAI Codex 是一个面向 NovelAI 的图像生成工具集，提供 Rust 后端（axum）与 Vue/Quasar 前端的完整工作流。
 
 ## 当前状态与限制
